@@ -24,6 +24,11 @@ import { rhetoricalComposerService } from '@/lib/services/rhetorical-composer-se
 import { systemPromptTemplateService, TEMPLATE_KEYS } from '@/lib/services/system-prompt-template-service';
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
 import {
+  normalizePaperReviewIssue,
+  normalizePaperReviewRecord,
+  normalizePaperReviewSummary,
+} from '@/lib/paper-review-utils';
+import {
   buildCitationKeyLookup,
   citationKeyIdentity,
   resolveCitationKeyFromLookup,
@@ -53,8 +58,9 @@ const actionSchema = z.object({
     'get_citation_sequence_history',
     'analyze_structure',
     'word_count',
-    'run_ai_review',
-    'apply_ai_fix'
+    'run_manuscript_review',
+    'preview_review_fix',
+    'apply_review_fix'
   ])
 });
 
@@ -150,30 +156,23 @@ const citationSequenceHistorySchema = z.object({
   limit: z.number().int().min(1).max(100).optional()
 });
 
-const aiReviewSchema = z.object({
+const manuscriptReviewSchema = z.object({
   sessionId: z.string().min(1),
-  draft: z.record(z.string())
+  reviewMode: z.enum(['quick', 'section_by_section']).optional(),
 });
 
-const aiFixSchema = z.object({
+const reviewFixPreviewSchema = z.object({
   sessionId: z.string().min(1),
-  sectionKey: z.string().min(1),
-  issue: z.object({
-    id: z.string(),
-    sectionKey: z.string(),
-    sectionLabel: z.string(),
-    type: z.enum(['error', 'warning', 'suggestion']),
-    category: z.string(),
-    title: z.string(),
-    description: z.string(),
-    suggestion: z.string(),
-    fixPrompt: z.string(),
-    relatedSections: z.array(z.string()).optional(),
-    severity: z.number()
-  }),
-  currentContent: z.string(),
-  relatedContent: z.record(z.string()).optional(),
-  previewOnly: z.boolean().optional()
+  reviewId: z.string().min(1),
+  issueId: z.string().min(1)
+});
+
+const applyReviewFixSchema = z.object({
+  sessionId: z.string().min(1),
+  reviewId: z.string().min(1),
+  issueId: z.string().min(1),
+  originalContent: z.string().optional(),
+  fixedContent: z.string().optional()
 });
 
 const humanizeSectionSchema = z.object({
@@ -1610,6 +1609,13 @@ interface FigureInferenceMeta {
   summary?: string;
   visibleElements?: string[];
   visibleText?: string[];
+  keyVariables?: string[];
+  comparedGroups?: string[];
+  numericHighlights?: string[];
+  observedPatterns?: string[];
+  resultDetails?: string[];
+  methodologyDetails?: string[];
+  discussionCues?: string[];
   chartSignals?: string[];
   claimsSupported?: string[];
   claimsToAvoid?: string[];
@@ -2372,6 +2378,27 @@ function parseFigureInferenceMeta(value: unknown): FigureInferenceMeta | null {
   const visibleText = Array.isArray(meta.visibleText)
     ? meta.visibleText.map((item) => cleanPromptFigureText(item, 80)).filter(Boolean)
     : [];
+  const keyVariables = Array.isArray(meta.keyVariables)
+    ? meta.keyVariables.map((item) => cleanPromptFigureText(item, 120)).filter(Boolean)
+    : [];
+  const comparedGroups = Array.isArray(meta.comparedGroups)
+    ? meta.comparedGroups.map((item) => cleanPromptFigureText(item, 120)).filter(Boolean)
+    : [];
+  const numericHighlights = Array.isArray(meta.numericHighlights)
+    ? meta.numericHighlights.map((item) => cleanPromptFigureText(item, 140)).filter(Boolean)
+    : [];
+  const observedPatterns = Array.isArray(meta.observedPatterns)
+    ? meta.observedPatterns.map((item) => cleanPromptFigureText(item, 160)).filter(Boolean)
+    : [];
+  const resultDetails = Array.isArray(meta.resultDetails)
+    ? meta.resultDetails.map((item) => cleanPromptFigureText(item, 180)).filter(Boolean)
+    : [];
+  const methodologyDetails = Array.isArray(meta.methodologyDetails)
+    ? meta.methodologyDetails.map((item) => cleanPromptFigureText(item, 180)).filter(Boolean)
+    : [];
+  const discussionCues = Array.isArray(meta.discussionCues)
+    ? meta.discussionCues.map((item) => cleanPromptFigureText(item, 180)).filter(Boolean)
+    : [];
   const chartSignals = Array.isArray(meta.chartSignals)
     ? meta.chartSignals.map((item) => cleanPromptFigureText(item, 120)).filter(Boolean)
     : [];
@@ -2383,7 +2410,18 @@ function parseFigureInferenceMeta(value: unknown): FigureInferenceMeta | null {
     : [];
   const inferredAt = cleanPromptFigureText(meta.inferredAt, 40);
 
-  if (!summary && visibleElements.length === 0 && visibleText.length === 0 && chartSignals.length === 0) {
+  if (
+    !summary
+    && visibleElements.length === 0
+    && visibleText.length === 0
+    && keyVariables.length === 0
+    && numericHighlights.length === 0
+    && observedPatterns.length === 0
+    && resultDetails.length === 0
+    && methodologyDetails.length === 0
+    && discussionCues.length === 0
+    && chartSignals.length === 0
+  ) {
     return null;
   }
 
@@ -2391,6 +2429,13 @@ function parseFigureInferenceMeta(value: unknown): FigureInferenceMeta | null {
     ...(summary ? { summary } : {}),
     ...(visibleElements.length > 0 ? { visibleElements } : {}),
     ...(visibleText.length > 0 ? { visibleText } : {}),
+    ...(keyVariables.length > 0 ? { keyVariables } : {}),
+    ...(comparedGroups.length > 0 ? { comparedGroups } : {}),
+    ...(numericHighlights.length > 0 ? { numericHighlights } : {}),
+    ...(observedPatterns.length > 0 ? { observedPatterns } : {}),
+    ...(resultDetails.length > 0 ? { resultDetails } : {}),
+    ...(methodologyDetails.length > 0 ? { methodologyDetails } : {}),
+    ...(discussionCues.length > 0 ? { discussionCues } : {}),
     ...(chartSignals.length > 0 ? { chartSignals } : {}),
     ...(claimsSupported.length > 0 ? { claimsSupported } : {}),
     ...(claimsToAvoid.length > 0 ? { claimsToAvoid } : {}),
@@ -2532,6 +2577,27 @@ function formatSelectedFigureContext(figureContext: FigurePromptContext, section
         : '',
       figure.inferredImageMeta?.visibleText?.length
         ? `  Visible text: ${figure.inferredImageMeta.visibleText.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.keyVariables?.length
+        ? `  Key variables: ${figure.inferredImageMeta.keyVariables.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.comparedGroups?.length
+        ? `  Compared groups: ${figure.inferredImageMeta.comparedGroups.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.numericHighlights?.length
+        ? `  Numeric highlights: ${figure.inferredImageMeta.numericHighlights.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.observedPatterns?.length
+        ? `  Observed patterns: ${figure.inferredImageMeta.observedPatterns.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.resultDetails?.length
+        ? `  Results-ready details: ${figure.inferredImageMeta.resultDetails.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.methodologyDetails?.length
+        ? `  Methods-visible details: ${figure.inferredImageMeta.methodologyDetails.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.discussionCues?.length
+        ? `  Discussion cues: ${figure.inferredImageMeta.discussionCues.join('; ')}`
         : '',
       figure.inferredImageMeta?.chartSignals?.length
         ? `  Visible signals: ${figure.inferredImageMeta.chartSignals.join('; ')}`
@@ -3444,9 +3510,10 @@ async function buildPrompt(
 - Use only the figure metadata supplied below; do not infer visual details beyond it.
 - Mention figures only when they materially support the section's claims.
 - Refer to them as [Figure N].
-- In Methodology, use figures to explain setup/process only.
-- In Results, report only observations grounded in the figure metadata.
-- In Discussion, interpret only patterns already grounded in results/figures.`;
+- In Methodology, use only setup/process details from the figure metadata.
+- In Results, prioritize numeric highlights, observed patterns, compared groups, visible signals, and results-ready details.
+- In Discussion, interpret only patterns already grounded in results/figures and treat discussion cues conservatively.
+- Treat claimsToAvoid as hard exclusions.`;
   const figureContextBlockText = formatSelectedFigureContext(figureContext || { useFigures: false, selectedFigureIds: [], figures: [] }, sectionKey);
   const figureGroundingBlock = figureContextBlockText
     ? await systemPromptTemplateService.resolveWithFallback(
@@ -5224,6 +5291,604 @@ Return ONLY JSON:
   };
 }
 
+function parseBlueprintSectionOrder(sectionPlan: unknown): string[] {
+  if (!Array.isArray(sectionPlan)) return [];
+
+  return sectionPlan
+    .map((entry) => {
+      const record = asRecord(entry);
+      return normalizeSectionKey(String(record.sectionKey || '').trim());
+    })
+    .filter(Boolean);
+}
+
+function buildPaperDraftSectionMap(
+  draft: any,
+  researchTopic?: { title?: string | null; abstractDraft?: string | null } | null
+): Record<string, string> {
+  const normalizedSections = normalizeExtraSections(draft?.extraSections);
+  const sectionMap: Record<string, string> = {};
+
+  for (const [rawKey, rawValue] of Object.entries(normalizedSections)) {
+    const sectionKey = normalizeSectionKey(rawKey);
+    const content = polishDraftMarkdown(String(rawValue || ''));
+    if (sectionKey && content.trim()) {
+      sectionMap[sectionKey] = content;
+    }
+  }
+
+  const fallbackAbstract = polishDraftMarkdown(
+    String(sectionMap.abstract || draft?.abstract || researchTopic?.abstractDraft || '')
+  ).trim();
+  if (fallbackAbstract) {
+    sectionMap.abstract = fallbackAbstract;
+  }
+
+  const fallbackTitle = String(draft?.title || researchTopic?.title || '').trim();
+  if (fallbackTitle) {
+    sectionMap.title = fallbackTitle;
+  }
+
+  return sectionMap;
+}
+
+function extractFigureNumbersFromText(content: string): number[] {
+  const matches = String(content || '').matchAll(/\b(?:figure|fig\.?)\s*(\d+)\b/gi);
+  const numbers = new Set<number>();
+
+  for (const match of matches) {
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      numbers.add(parsed);
+    }
+  }
+
+  return Array.from(numbers).sort((left, right) => left - right);
+}
+
+async function loadPaperReviewFigureEntries(sessionId: string): Promise<FigurePromptEntry[]> {
+  const plans = await prisma.figurePlan.findMany({
+    where: { sessionId },
+    orderBy: { figureNo: 'asc' }
+  });
+
+  return plans
+    .map<FigurePromptEntry | null>((plan) => {
+      const meta = asRecord(plan.nodes);
+      if (meta.isDeleted === true || meta.deleted === true || meta.status === 'DELETED') {
+        return null;
+      }
+
+      const suggestionMeta = asRecord(meta.suggestionMeta);
+      return {
+        id: plan.id,
+        figureNo: Number(plan.figureNo),
+        title: cleanPromptFigureText(plan.title, 140) || `Figure ${plan.figureNo}`,
+        caption: cleanPromptFigureText(meta.caption || plan.description, 220),
+        description: cleanPromptFigureText(plan.description, 220),
+        notes: cleanPromptFigureText(meta.notes, 220),
+        category: cleanPromptFigureText(meta.category, 40),
+        figureType: cleanPromptFigureText(meta.figureType, 40),
+        status: cleanPromptFigureText(meta.status, 40),
+        imagePath: resolvePaperFigureImageUrl(sessionId, plan.id, cleanPromptFigureText(meta.imagePath, 180)) || undefined,
+        relevantSection: cleanPromptFigureText(suggestionMeta.relevantSection, 40),
+        figureRole: cleanPromptFigureText(suggestionMeta.figureRole, 40),
+        whyThisFigure: cleanPromptFigureText(suggestionMeta.whyThisFigure, 220),
+        dataNeeded: cleanPromptFigureText(suggestionMeta.dataNeeded, 220),
+        sectionFitJustification: cleanPromptFigureText(suggestionMeta.sectionFitJustification, 180),
+        structuredHint: summarizeFigureStructuredHint(suggestionMeta),
+        inferredImageMeta: parseFigureInferenceMeta(meta.inferredImageMeta)
+      };
+    })
+    .filter((entry): entry is FigurePromptEntry => entry !== null);
+}
+
+function extractJsonObjectFromModelOutput(output: string): any {
+  const raw = String(output || '').trim();
+  if (!raw) {
+    throw new Error('Model returned an empty response');
+  }
+
+  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = (fencedMatch?.[1] || raw).trim();
+
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const firstBrace = candidate.indexOf('{');
+    const lastBrace = candidate.lastIndexOf('}');
+    if (firstBrace === -1 || lastBrace <= firstBrace) {
+      throw new Error('Model response did not contain a JSON object');
+    }
+    return JSON.parse(candidate.slice(firstBrace, lastBrace + 1));
+  }
+}
+
+function buildPaperFixSummary(before: string, after: string): string {
+  const beforeWords = computeWordCount(before);
+  const afterWords = computeWordCount(after);
+  const delta = afterWords - beforeWords;
+
+  if (before.trim() === after.trim()) {
+    return 'No material text change.';
+  }
+
+  if (delta === 0) {
+    return `Revised wording with ${afterWords} words retained.`;
+  }
+
+  const direction = delta > 0 ? 'expanded' : 'condensed';
+  return `Section ${direction} from ${beforeWords} to ${afterWords} words.`;
+}
+
+function interpolatePaperReviewPrompt(template: string, variables: Record<string, string>): string {
+  let resolved = String(template || '');
+  for (const [key, value] of Object.entries(variables)) {
+    resolved = resolved.split(`{{${key}}}`).join(value);
+  }
+  return resolved.replace(/\{\{[A-Z0-9_]+\}\}/g, '').trim();
+}
+
+async function resolveRequiredPaperReviewTemplate(templateKey: string, sectionScope?: string): Promise<string> {
+  const resolved = await systemPromptTemplateService.resolve({
+    templateKey,
+    applicationMode: 'paper',
+    ...(sectionScope ? { sectionScope } : {})
+  });
+
+  if (resolved) {
+    return resolved;
+  }
+
+  throw new Error(`Missing required system prompt template: ${templateKey} (${sectionScope || '*'})`);
+}
+
+async function buildPaperReviewPrompt(model: Record<string, unknown>): Promise<string> {
+  const template = await resolveRequiredPaperReviewTemplate(TEMPLATE_KEYS.PAPER_MANUSCRIPT_REVIEW_QUICK);
+  return interpolatePaperReviewPrompt(template, {
+    CANONICAL_PAPER_REVIEW_MODEL: JSON.stringify(model, null, 2)
+  });
+}
+
+function getPaperReviewModeLabel(reviewMode: 'quick' | 'section_by_section'): string {
+  return reviewMode === 'section_by_section' ? 'Section-by-Section Review' : 'Quick Review';
+}
+
+function getPaperSectionReviewerProfile(sectionKey: string): {
+  reviewerType: string;
+  promptVariant: string;
+  rubricChecks: string[];
+  emphasis: string[];
+} {
+  const normalized = normalizeSectionKey(sectionKey);
+
+  switch (normalized) {
+    case 'title':
+      return {
+        reviewerType: 'title_reviewer',
+        promptVariant: 'title_precision',
+        rubricChecks: [
+          'Check scope accuracy and whether the title overclaims what the manuscript actually demonstrates.',
+          'Check clarity, specificity, and whether the key method/domain is identifiable.',
+          'Check alignment with abstract and core contribution.'
+        ],
+        emphasis: ['precision over marketing language', 'scope alignment', 'contribution clarity']
+      };
+    case 'abstract':
+      return {
+        reviewerType: 'abstract_reviewer',
+        promptVariant: 'abstract_completeness',
+        rubricChecks: [
+          'Check whether the abstract states the problem, approach, key results, and implications.',
+          'Check whether the abstract contains unsupported claims relative to methods/results.',
+          'Check whether novelty and contribution are concrete rather than vague.'
+        ],
+        emphasis: ['result specificity', 'claim support', 'publication-facing clarity']
+      };
+    case 'introduction':
+      return {
+        reviewerType: 'introduction_reviewer',
+        promptVariant: 'gap_positioning',
+        rubricChecks: [
+          'Check problem framing, motivation, research gap articulation, and contribution framing.',
+          'Check positioning against prior work and whether promises are concrete.',
+          'Check whether introduction promises are delivered elsewhere in the manuscript.'
+        ],
+        emphasis: ['gap framing', 'contribution positioning', 'promise tracking']
+      };
+    case 'literature_review':
+    case 'related_work':
+      return {
+        reviewerType: 'related_work_reviewer',
+        promptVariant: 'prior_work_coverage',
+        rubricChecks: [
+          'Check whether prior work is synthesized instead of listed.',
+          'Check whether novelty is distinguished honestly against cited work.',
+          'Check whether references are current and relevant where recency matters.'
+        ],
+        emphasis: ['synthesis quality', 'novelty differentiation', 'citation adequacy']
+      };
+    case 'methodology':
+    case 'methods':
+      return {
+        reviewerType: 'methodology_reviewer',
+        promptVariant: 'reproducibility_rigor',
+        rubricChecks: [
+          'Check reproducibility detail, setup clarity, data/protocol specification, and metric definitions.',
+          'Check whether figures used in methodology match methodological claims.',
+          'Check whether causal/general claims exceed what the method description supports.'
+        ],
+        emphasis: ['reproducibility', 'procedural clarity', 'figure-grounded rigor']
+      };
+    case 'results':
+    case 'experiments':
+    case 'analysis':
+      return {
+        reviewerType: 'results_reviewer',
+        promptVariant: 'results_evidence_alignment',
+        rubricChecks: [
+          'Check whether results are specific, interpretable, and tied to evidence.',
+          'Check whether baselines, metrics, and comparisons are sufficiently justified.',
+          'Check whether figure references match stated trends and findings.'
+        ],
+        emphasis: ['evidence alignment', 'metric clarity', 'figure-text consistency']
+      };
+    case 'discussion':
+      return {
+        reviewerType: 'discussion_reviewer',
+        promptVariant: 'interpretation_balance',
+        rubricChecks: [
+          'Check whether the discussion interprets results rather than repeating them.',
+          'Check whether limitations, implications, and failure modes are acknowledged honestly.',
+          'Check whether discussion claims stay within the demonstrated scope.'
+        ],
+        emphasis: ['balanced interpretation', 'limitations honesty', 'scope control']
+      };
+    case 'conclusion':
+      return {
+        reviewerType: 'conclusion_reviewer',
+        promptVariant: 'conclusion_support',
+        rubricChecks: [
+          'Check whether the conclusion is supported by the body and avoids introducing new claims.',
+          'Check whether takeaways are concrete and proportional to the evidence.',
+          'Check whether future work or implications are framed responsibly.'
+        ],
+        emphasis: ['support alignment', 'claim proportionality', 'clear takeaways']
+      };
+    case 'references':
+      return {
+        reviewerType: 'references_reviewer',
+        promptVariant: 'reference_quality',
+        rubricChecks: [
+          'Check for obvious adequacy gaps, citation over-concentration, and likely outdated coverage where relevant.',
+          'Check whether citations appear to support major claims rather than decorate them.',
+          'Do not fabricate bibliographic defects you cannot ground from the supplied data.'
+        ],
+        emphasis: ['support quality', 'coverage balance', 'grounded caution']
+      };
+    default:
+      return {
+        reviewerType: 'generic_section_reviewer',
+        promptVariant: 'generic_section_quality',
+        rubricChecks: [
+          'Check local clarity, completeness, and contribution to the manuscript narrative.',
+          'Check whether claims are concrete and supported by visible evidence in context.',
+          'Check whether the section fits its role in the paper.'
+        ],
+        emphasis: ['section role clarity', 'local support quality', 'narrative fit']
+      };
+  }
+}
+
+async function buildDetailedSectionReviewPrompt(params: {
+  reviewModel: Record<string, any>;
+  section: Record<string, any>;
+  contextSections: Array<Record<string, any>>;
+  relevantFigures: Array<Record<string, any>>;
+  relevantCitations: Array<Record<string, any>>;
+}): Promise<string> {
+  const normalizedSectionKey = normalizeSectionKey(String(params.section.sectionKey || '')) || '*';
+  const template = await resolveRequiredPaperReviewTemplate(
+    TEMPLATE_KEYS.PAPER_MANUSCRIPT_REVIEW_SECTION,
+    normalizedSectionKey
+  );
+
+  return interpolatePaperReviewPrompt(template, {
+    TARGET_SECTION_KEY: String(params.section.sectionKey || ''),
+    TARGET_SECTION_LABEL: String(params.section.sectionLabel || ''),
+    PAPER_OVERVIEW: JSON.stringify({
+      paperId: params.reviewModel.paperId,
+      title: params.reviewModel.title,
+      abstract: params.reviewModel.abstract,
+      articleType: params.reviewModel.articleType,
+      targetVenue: params.reviewModel.targetVenue,
+      blueprint: params.reviewModel.blueprint,
+    }, null, 2),
+    TARGET_SECTION: JSON.stringify(params.section, null, 2),
+    CONTEXT_SECTIONS: JSON.stringify(params.contextSections, null, 2),
+    RELEVANT_FIGURES: JSON.stringify(params.relevantFigures, null, 2),
+    RELEVANT_CITATIONS: JSON.stringify(params.relevantCitations, null, 2)
+  });
+}
+
+async function buildPaperReviewAggregationPrompt(params: {
+  reviewModel: Record<string, any>;
+  sectionReviewerOutputs: Array<Record<string, any>>;
+}): Promise<string> {
+  const template = await resolveRequiredPaperReviewTemplate(TEMPLATE_KEYS.PAPER_MANUSCRIPT_REVIEW_AGGREGATION);
+  return interpolatePaperReviewPrompt(template, {
+    CANONICAL_PAPER_REVIEW_MODEL: JSON.stringify(params.reviewModel, null, 2),
+    SECTION_REVIEWER_OUTPUTS: JSON.stringify(params.sectionReviewerOutputs, null, 2)
+  });
+}
+
+function normalizePendingPaperReviewIssue(raw: any, index: number, createdAt: string) {
+  const issue = normalizePaperReviewIssue(raw, index);
+  return {
+    ...issue,
+    status: 'pending' as const,
+    createdAt: issue.createdAt || createdAt
+  };
+}
+
+function dedupePendingPaperReviewIssues(
+  issues: Array<ReturnType<typeof normalizePendingPaperReviewIssue>>
+) {
+  const seen = new Set<string>();
+  const deduped: typeof issues = [];
+
+  for (const issue of issues) {
+    const key = [
+      normalizeSectionKey(issue.sectionKey),
+      issue.reviewDimension,
+      issue.title.trim().toLowerCase()
+    ].join('::');
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(issue);
+  }
+
+  return deduped;
+}
+
+async function runSectionBySectionPaperReview(params: {
+  reviewModel: Record<string, any>;
+  requestHeaders: Record<string, string>;
+  sessionId: string;
+  tenantContext?: TenantContext | null;
+  reviewedAt: string;
+}) {
+  const { reviewModel, requestHeaders, sessionId, tenantContext, reviewedAt } = params;
+  const sections = Array.isArray(reviewModel.sections) ? reviewModel.sections : [];
+  const references = Array.isArray(reviewModel.references) ? reviewModel.references : [];
+  const figures = Array.isArray(reviewModel.figures) ? reviewModel.figures : [];
+
+  const sectionReviewerOutputs = await Promise.all(
+    sections.map(async (section: Record<string, any>, sectionIndex: number) => {
+      const sectionKey = String(section.sectionKey || '');
+      const figureIdSet = new Set<string>(Array.isArray(section.referencedFigureIds) ? section.referencedFigureIds : []);
+      const relevantFigures = figures.filter((figure: any) => figureIdSet.has(String(figure.figureId || '')));
+      const citationKeySet = new Set<string>(Array.isArray(section.citedReferenceIds) ? section.citedReferenceIds : []);
+      const relevantCitations = references.filter((reference: any) => citationKeySet.has(String(reference.citationKey || '')));
+      const contextSections = sections
+        .filter((candidate: Record<string, any>) => candidate.sectionKey !== sectionKey)
+        .filter((candidate: Record<string, any>) => {
+          const candidateKey = String(candidate.sectionKey || '');
+          return candidateKey === 'title'
+            || candidateKey === 'abstract'
+            || candidateKey === 'conclusion'
+            || candidateKey === 'results'
+            || candidateKey === 'methodology'
+            || Math.abs(Number(candidate.orderIndex || 0) - Number(section.orderIndex || 0)) === 1;
+        })
+        .slice(0, 4);
+
+      const result = await llmGateway.executeLLMOperation(
+        { headers: requestHeaders },
+        {
+          taskCode: 'LLM2_DRAFT' as const,
+          stageCode: 'PAPER_MANUSCRIPT_REVIEW',
+          prompt: await buildDetailedSectionReviewPrompt({
+            reviewModel,
+            section,
+            contextSections,
+            relevantFigures,
+            relevantCitations
+          }),
+          parameters: {
+            temperature: 0.15,
+            tenantId: tenantContext?.tenantId
+          },
+          idempotencyKey: crypto.randomUUID(),
+          metadata: {
+            sessionId,
+            paperId: sessionId,
+            action: 'run_section_review',
+            module: 'paper_review',
+            purpose: 'paper_section_review',
+            sectionKey,
+            sectionIndex
+          }
+        }
+      );
+
+      if (!result.success || !result.response) {
+        throw new Error(result.error?.message || `Failed to review section ${sectionKey}`);
+      }
+
+      const parsed = extractJsonObjectFromModelOutput(result.response.output || '');
+      const sectionIssues = Array.isArray(parsed?.issues)
+        ? parsed.issues.map((issue: any, index: number) => normalizePendingPaperReviewIssue(issue, index, reviewedAt))
+        : [];
+      const rawSummary = parsed?.sectionSummary && typeof parsed.sectionSummary === 'object'
+        ? parsed.sectionSummary
+        : {};
+
+      return {
+        sectionSummary: {
+          sectionKey,
+          sectionLabel: String(rawSummary.sectionLabel || section.sectionLabel || sectionKey),
+          score: Number(rawSummary.score || 0),
+          strengths: Array.isArray(rawSummary.strengths) ? rawSummary.strengths : [],
+          weaknesses: Array.isArray(rawSummary.weaknesses) ? rawSummary.weaknesses : [],
+          status: rawSummary.status || 'needs_work',
+          executiveSummary: String(rawSummary.executiveSummary || '').trim(),
+          reviewerType: String(rawSummary.reviewerType || getPaperSectionReviewerProfile(sectionKey).reviewerType),
+          promptVariant: String(rawSummary.promptVariant || getPaperSectionReviewerProfile(sectionKey).promptVariant),
+          issueIds: sectionIssues.map((issue: any) => issue.id)
+        },
+        issues: sectionIssues,
+        tokensUsed: result.response.outputTokens || 0
+      };
+    })
+  );
+
+  const aggregationResult = await llmGateway.executeLLMOperation(
+    { headers: requestHeaders },
+    {
+      taskCode: 'LLM2_DRAFT' as const,
+      stageCode: 'PAPER_MANUSCRIPT_REVIEW',
+      prompt: await buildPaperReviewAggregationPrompt({
+        reviewModel,
+        sectionReviewerOutputs
+      }),
+      parameters: {
+        temperature: 0.15,
+        tenantId: tenantContext?.tenantId
+      },
+      idempotencyKey: crypto.randomUUID(),
+      metadata: {
+        sessionId,
+        paperId: sessionId,
+        action: 'run_section_review_aggregation',
+        module: 'paper_review',
+        purpose: 'paper_section_review_aggregation'
+      }
+    }
+  );
+
+  if (!aggregationResult.success || !aggregationResult.response) {
+    throw new Error(aggregationResult.error?.message || 'Failed to aggregate section review');
+  }
+
+  const parsedAggregation = extractJsonObjectFromModelOutput(aggregationResult.response.output || '');
+  const aggregateIssues = Array.isArray(parsedAggregation?.issues)
+    ? parsedAggregation.issues.map((issue: any, index: number) =>
+        normalizePendingPaperReviewIssue(issue, index + 1000, reviewedAt)
+      )
+    : [];
+
+  const allIssues = dedupePendingPaperReviewIssues(
+    sectionReviewerOutputs.flatMap(output => output.issues).concat(aggregateIssues)
+  );
+
+  const sectionSummaries = sectionReviewerOutputs.map(output => ({
+    sectionKey: output.sectionSummary.sectionKey,
+    sectionLabel: output.sectionSummary.sectionLabel,
+    score: output.sectionSummary.score,
+    strengths: output.sectionSummary.strengths,
+    weaknesses: output.sectionSummary.weaknesses,
+    status: output.sectionSummary.status
+  }));
+  const sectionReviewTraces = sectionReviewerOutputs.map(output => output.sectionSummary);
+  const aggregationSummary = parsedAggregation?.summary && typeof parsedAggregation.summary === 'object'
+    ? parsedAggregation.summary
+    : {};
+  const summary = normalizePaperReviewSummary({
+    ...aggregationSummary,
+    reviewMode: 'section_by_section',
+    reviewLabel: getPaperReviewModeLabel('section_by_section'),
+    sectionSummaries,
+    sectionReviewTraces,
+    generatedAt: reviewedAt
+  }, allIssues);
+  const tokensUsed = sectionReviewerOutputs.reduce((sum, output) => sum + Number(output.tokensUsed || 0), 0)
+    + Number(aggregationResult.response.outputTokens || 0);
+
+  return {
+    issues: allIssues,
+    summary,
+    tokensUsed
+  };
+}
+
+async function buildPaperReviewFixPrompt(params: {
+  issue: ReturnType<typeof normalizePaperReviewIssue>;
+  targetSectionContent: string;
+  relatedSections: Array<{ sectionKey: string; sectionLabel: string; content: string }>;
+  relevantFigures: FigurePromptEntry[];
+  relevantCitations: SessionCitation[];
+}): Promise<string> {
+  const { issue, targetSectionContent, relatedSections, relevantFigures, relevantCitations } = params;
+
+  const relatedSectionsBlock = relatedSections.length > 0
+    ? relatedSections
+        .map((section) => `## ${section.sectionLabel} (${section.sectionKey})\n${section.content}`)
+        .join('\n\n')
+    : 'None';
+
+  const figureBlock = relevantFigures.length > 0
+    ? relevantFigures.map((figure) => {
+        const lines = [
+          `- ${figure.id} | Figure ${figure.figureNo}: ${figure.title}`,
+          figure.caption ? `  Caption: ${figure.caption}` : '',
+          figure.figureRole ? `  Role: ${figure.figureRole}` : '',
+          figure.relevantSection ? `  Suggested section: ${figure.relevantSection}` : '',
+          figure.whyThisFigure ? `  Why this figure: ${figure.whyThisFigure}` : '',
+          figure.structuredHint ? `  Structured hint: ${figure.structuredHint}` : '',
+          figure.inferredImageMeta?.summary ? `  Visible summary: ${figure.inferredImageMeta.summary}` : '',
+          figure.inferredImageMeta?.claimsSupported?.length
+            ? `  Supported claims: ${figure.inferredImageMeta.claimsSupported.join('; ')}`
+            : '',
+          figure.inferredImageMeta?.claimsToAvoid?.length
+            ? `  Avoid claiming: ${figure.inferredImageMeta.claimsToAvoid.join('; ')}`
+            : ''
+        ].filter(Boolean);
+
+        return lines.join('\n');
+      }).join('\n\n')
+    : 'None';
+
+  const citationBlock = relevantCitations.length > 0
+    ? relevantCitations.map((citation) => {
+        const authors = Array.isArray(citation.authors) ? citation.authors.join(', ') : '';
+        const year = citation.year ? ` (${citation.year})` : '';
+        const venue = citation.venue ? ` - ${citation.venue}` : '';
+        const prefix = authors || year ? `${authors}${year} - ` : '';
+        return `- ${citation.citationKey}: ${prefix}${citation.title}${venue}`;
+      }).join('\n')
+    : 'None';
+
+  const template = await resolveRequiredPaperReviewTemplate(TEMPLATE_KEYS.PAPER_MANUSCRIPT_IMPROVE_REWRITE);
+  return interpolatePaperReviewPrompt(template, {
+    TARGET_ISSUE: JSON.stringify(issue, null, 2),
+    TARGET_SECTION_CONTENT: targetSectionContent || '[Section currently empty]',
+    RELATED_SECTIONS: relatedSectionsBlock,
+    RELEVANT_FIGURES: figureBlock,
+    RELEVANT_CITATIONS: citationBlock
+  });
+}
+
+async function getPersistedPaperReview(sessionId: string, reviewId: string) {
+  const review = await prisma.aIReviewResult.findFirst({
+    where: {
+      id: reviewId,
+      sessionId,
+      jurisdiction: 'PAPER'
+    }
+  });
+
+  if (!review) {
+    return null;
+  }
+
+  return {
+    review,
+    normalized: normalizePaperReviewRecord(review)
+  };
+}
+
 export async function POST(request: NextRequest, context: { params: { paperId: string } }) {
   try {
     const { user, error } = await authenticateUser(request);
@@ -6759,220 +7424,568 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         return NextResponse.json({ total, perSection });
       }
 
-      case 'run_ai_review': {
-        const payload = aiReviewSchema.parse(body);
-        const draft = payload.draft;
+      case 'run_manuscript_review': {
+        const payload = manuscriptReviewSchema.parse(body);
+        const reviewMode = payload.reviewMode === 'section_by_section' ? 'section_by_section' : 'quick';
 
-        // Build review prompt
-        const sectionContents = Object.entries(draft)
-          .filter(([_, content]) => content && content.trim())
-          .map(([key, content]) => `## ${key.replace(/_/g, ' ').toUpperCase()}\n${content}`)
-          .join('\n\n');
+        const [draft, researchTopic, blueprint, citations, figures, venue] = await Promise.all([
+          getPaperDraft(sessionId),
+          prisma.researchTopic.findUnique({ where: { sessionId } }),
+          prisma.paperBlueprint.findUnique({ where: { sessionId } }),
+          citationService.getCitationsForSession(sessionId),
+          loadPaperReviewFigureEntries(sessionId),
+          session.publicationVenueId
+            ? prisma.publicationVenue.findUnique({ where: { id: session.publicationVenueId } })
+            : Promise.resolve(null)
+        ]);
 
-        if (!sectionContents) {
-          return NextResponse.json({
-            success: true,
-            issues: [],
-            summary: {
-              totalIssues: 0,
-              errors: 0,
-              warnings: 0,
-              suggestions: 0,
-              overallScore: 100,
-              recommendation: 'No content to review. Generate sections first.'
+        const reviewedAt = new Date().toISOString();
+        const sectionMap = buildPaperDraftSectionMap(draft, researchTopic);
+        const preferredOrder = ['title', 'abstract', ...parseBlueprintSectionOrder(blueprint?.sectionPlan)];
+        const sectionOrder = mergeSectionOrder(preferredOrder, sectionMap);
+        const figuresByNo = new Map(figures.map((figure) => [figure.figureNo, figure] as const));
+
+        const sections = sectionOrder
+          .map((sectionKey, index) => {
+            const content = String(sectionMap[sectionKey] || '');
+            if (!content.trim()) return null;
+
+            const figureNumbers = extractFigureNumbersFromText(content);
+            const referencedFigureIds = figureNumbers
+              .map((figureNo) => figuresByNo.get(figureNo)?.id || null)
+              .filter((value): value is string => Boolean(value));
+
+            return {
+              sectionId: sectionKey,
+              sectionKey,
+              sectionType: sectionKey,
+              heading: SECTION_DISPLAY_NAMES[sectionKey] || formatSectionLabel(sectionKey),
+              sectionLabel: SECTION_DISPLAY_NAMES[sectionKey] || formatSectionLabel(sectionKey),
+              orderIndex: index,
+              bodyText: content,
+              wordCount: computeWordCount(content),
+              citedReferenceIds: extractCitationKeys(content),
+              referencedFigureIds
+            };
+          })
+          .filter((section): section is NonNullable<typeof section> => section !== null);
+
+        const figuresPayload = figures.map((figure) => {
+          const referencedBySectionIds = sections
+            .filter((section) => section.referencedFigureIds.includes(figure.id))
+            .map((section) => section.sectionKey);
+
+          return {
+            figureId: figure.id,
+            figureLabel: `Figure ${figure.figureNo}`,
+            title: figure.title,
+            caption: figure.caption || '',
+            figureType: figure.figureType || figure.category || '',
+            insertionSectionId: figure.relevantSection || null,
+            referencedBySectionIds,
+            sourceType: figure.imagePath ? 'generated_or_uploaded' : 'planned',
+            generatedOrUploadedFlag: Boolean(figure.imagePath),
+            metadataPayload: {
+              description: figure.description || '',
+              notes: figure.notes || '',
+              figureRole: figure.figureRole || '',
+              whyThisFigure: figure.whyThisFigure || '',
+              dataNeeded: figure.dataNeeded || '',
+              sectionFitJustification: figure.sectionFitJustification || '',
+              structuredHint: figure.structuredHint || '',
+              inferredImageMeta: figure.inferredImageMeta || null
             }
-          });
-        }
-
-        const reviewPrompt = `You are an academic paper reviewer. Analyze the following paper draft and identify issues.
-
-PAPER CONTENT:
-${sectionContents}
-
-For each issue found, provide a JSON object with these fields:
-- id: unique identifier (e.g., "issue-1")
-- sectionKey: which section contains the issue (e.g., "introduction", "methodology")
-- sectionLabel: human-readable section name
-- type: "error" | "warning" | "suggestion"
-- category: "consistency" | "citation" | "completeness" | "academic" | "clarity" | "structure"
-- title: brief issue title
-- description: detailed description of the issue
-- suggestion: how to fix it
-- fixPrompt: specific instruction for AI to fix this issue
-- severity: 1-5 (5 being most severe)
-
-Return a JSON object with this structure:
-{
-  "issues": [...],
-  "summary": {
-    "totalIssues": number,
-    "errors": number,
-    "warnings": number,
-    "suggestions": number,
-    "overallScore": number (0-100),
-    "recommendation": "overall assessment string"
-  }
-}
-
-Focus on:
-1. Logical consistency between sections
-2. Citation usage and coverage
-3. Academic writing standards
-4. Structural completeness
-5. Clarity and readability
-
-Return ONLY valid JSON, no other text.`;
-
-        // maxTokensOut is controlled via super admin LLM config for PAPER_AI_REVIEW stage
-        const llmRequest = {
-          taskCode: 'LLM2_DRAFT' as const,
-          stageCode: 'PAPER_AI_REVIEW',
-          prompt: reviewPrompt,
-          parameters: {
-            temperature: 0.3,
-          },
-          idempotencyKey: crypto.randomUUID(),
-          metadata: {
-            sessionId,
-            paperId: sessionId,
-            action: 'ai_review',
-            module: 'publication_ideation',
-            purpose: 'paper_ai_review'
-          }
-        };
-
-        const headers = Object.fromEntries(request.headers.entries());
-        const result = await llmGateway.executeLLMOperation({ headers }, llmRequest);
-
-        if (!result.success || !result.response) {
-          return NextResponse.json({
-            success: false,
-            error: result.error?.message || 'AI Review failed'
-          }, { status: 500 });
-        }
-
-        try {
-          const output = result.response.output || '';
-          // Extract JSON from response (handle markdown code blocks)
-          const jsonMatch = output.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, output];
-          const jsonStr = jsonMatch[1] || output;
-          const parsed = JSON.parse(jsonStr.trim());
-
-          return NextResponse.json({
-            success: true,
-            issues: parsed.issues || [],
-            summary: parsed.summary || {
-              totalIssues: (parsed.issues || []).length,
-              errors: (parsed.issues || []).filter((i: any) => i.type === 'error').length,
-              warnings: (parsed.issues || []).filter((i: any) => i.type === 'warning').length,
-              suggestions: (parsed.issues || []).filter((i: any) => i.type === 'suggestion').length,
-              overallScore: 75,
-              recommendation: 'Review complete.'
-            },
-            reviewId: crypto.randomUUID()
-          });
-        } catch (parseError) {
-          console.error('[PaperDrafting] Failed to parse AI review response:', parseError);
-          return NextResponse.json({
-            success: true,
-            issues: [],
-            summary: {
-              totalIssues: 0,
-              errors: 0,
-              warnings: 0,
-              suggestions: 0,
-              overallScore: 80,
-              recommendation: 'Unable to parse review results. Please try again.'
-            },
-            reviewId: crypto.randomUUID()
-          });
-        }
-      }
-
-      case 'apply_ai_fix': {
-        const payload = aiFixSchema.parse(body);
-        const { sectionKey, issue, currentContent, relatedContent } = payload;
-
-        const fixPrompt = `You are an academic writing assistant. Fix the following issue in a paper section.
-
-ISSUE:
-Type: ${issue.type}
-Category: ${issue.category}
-Title: ${issue.title}
-Description: ${issue.description}
-Suggestion: ${issue.suggestion}
-Fix Instructions: ${issue.fixPrompt}
-
-CURRENT CONTENT OF "${sectionKey.replace(/_/g, ' ').toUpperCase()}":
-${currentContent}
-
-${relatedContent && Object.keys(relatedContent).length > 0 ? `
-RELATED SECTIONS FOR CONTEXT:
-${Object.entries(relatedContent).map(([k, v]) => `## ${k.replace(/_/g, ' ').toUpperCase()}\n${v}`).join('\n\n')}
-` : ''}
-
-Provide the COMPLETE revised section content that addresses the issue while preserving:
-- Academic tone and style
-- Existing citations and references
-- Overall structure and flow
-
-Return ONLY the revised section content in polished Markdown:
-- No code fences, no JSON, no explanations.
-- Preserve heading and list hierarchy.
-- Preserve [CITE:key] placeholders exactly.`;
-
-        // maxTokensOut is controlled via super admin LLM config for PAPER_AI_FIX stage
-        const llmRequest = {
-          taskCode: 'LLM2_DRAFT' as const,
-          stageCode: 'PAPER_AI_FIX',
-          prompt: fixPrompt,
-          parameters: {
-            temperature: 0.2,
-          },
-          idempotencyKey: crypto.randomUUID(),
-          metadata: {
-            sessionId,
-            paperId: sessionId,
-            sectionKey,
-            issueId: issue.id,
-            action: 'ai_fix',
-            module: 'publication_ideation',
-            purpose: 'paper_ai_fix'
-          }
-        };
-
-        const headers = Object.fromEntries(request.headers.entries());
-        const result = await llmGateway.executeLLMOperation({ headers }, llmRequest);
-
-        if (!result.success || !result.response) {
-          return NextResponse.json({
-            success: false,
-            error: result.error?.message || 'AI Fix failed'
-          }, { status: 500 });
-        }
-
-        const fixedContent = polishDraftMarkdown((result.response.output || '').trim());
-
-        // If preview only, return without saving
-        if (payload.previewOnly) {
-          return NextResponse.json({
-            success: true,
-            fixedContent,
-            previewOnly: true
-          });
-        }
-
-        // Otherwise, save the fix
-        const researchTopic = await prisma.researchTopic.findUnique({
-          where: { sessionId }
+          };
         });
 
-        const existingDraft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
-        await updateDraftContent(existingDraft.id, sectionKey, fixedContent, paperTypeCode);
+        const reviewModel = {
+          paperId: sessionId,
+          title: sectionMap.title || researchTopic?.title || '',
+          abstract: sectionMap.abstract || researchTopic?.abstractDraft || '',
+          keywords: Array.isArray(researchTopic?.keywords) ? researchTopic.keywords : [],
+          articleType: session.paperType?.code || paperTypeCode,
+          targetVenue: venue?.name || null,
+          citationStyleCode: getStyleCode(session),
+          targetWordCount: session.targetWordCount || null,
+          currentWordCount: sections.reduce((sum, section) => sum + section.wordCount, 0),
+          researchContext: {
+            field: researchTopic?.field || '',
+            subfield: researchTopic?.subfield || '',
+            researchQuestion: researchTopic?.researchQuestion || '',
+            problemStatement: researchTopic?.problemStatement || '',
+            methodology: researchTopic?.methodology || '',
+            methodologyApproach: researchTopic?.methodologyApproach || '',
+            datasetDescription: researchTopic?.datasetDescription || '',
+            experiments: researchTopic?.experiments || '',
+            hypothesis: researchTopic?.hypothesis || '',
+            expectedResults: researchTopic?.expectedResults || '',
+            novelty: researchTopic?.novelty || '',
+            limitations: researchTopic?.limitations || ''
+          },
+          blueprint: blueprint ? {
+            thesisStatement: blueprint.thesisStatement || '',
+            centralObjective: blueprint.centralObjective || '',
+            keyContributions: Array.isArray(blueprint.keyContributions) ? blueprint.keyContributions : [],
+            sectionPlan: Array.isArray(blueprint.sectionPlan) ? blueprint.sectionPlan : [],
+            narrativeArc: blueprint.narrativeArc || '',
+            methodologyType: blueprint.methodologyType || '',
+            version: blueprint.version || 1
+          } : null,
+          sections,
+          figures: figuresPayload,
+          references: citations.map((citation) => ({
+            citationKey: citation.citationKey,
+            title: citation.title,
+            authors: Array.isArray(citation.authors) ? citation.authors : [],
+            year: citation.year || null,
+            venue: citation.venue || null,
+            sourceType: citation.sourceType || null
+          })),
+          citations: sections.map((section) => ({
+            sectionKey: section.sectionKey,
+            citationKeys: section.citedReferenceIds
+          })),
+          metadata: {
+            reviewedAt,
+            reviewMode: 'full_manuscript',
+            assumptions: [
+              'Review is grounded only in manuscript text and stored metadata.',
+              'Missing evidence should be treated as a manuscript deficiency, not proof that the research itself is invalid.'
+            ]
+          }
+        };
+
+        let issues: ReturnType<typeof normalizePendingPaperReviewIssue>[] = [];
+        let summary = normalizePaperReviewSummary({}, issues);
+        let tokensUsed: number | undefined;
+
+        if (sections.length === 0) {
+          summary = normalizePaperReviewSummary({
+            reviewMode,
+            reviewLabel: getPaperReviewModeLabel(reviewMode),
+            executiveSummary: 'The manuscript does not yet contain drafted sections to review.',
+            overallReadiness: 'not_submission_ready',
+            readinessRationale: 'Generate the manuscript body before running the review stage.',
+            rejectRiskDrivers: ['Core manuscript sections are missing'],
+            revisionPriorities: ['Draft the required paper sections before review'],
+            actionPlan: [
+              {
+                title: 'Complete drafting first',
+                priority: 'high',
+                summary: 'Create the core manuscript sections, then rerun review.',
+                issueIds: []
+              }
+            ],
+            generatedAt: reviewedAt
+          }, issues);
+        } else if (reviewMode === 'section_by_section') {
+          const detailedReview = await runSectionBySectionPaperReview({
+            reviewModel,
+            requestHeaders,
+            sessionId,
+            tenantContext,
+            reviewedAt
+          });
+          issues = detailedReview.issues;
+          summary = detailedReview.summary;
+          tokensUsed = detailedReview.tokensUsed;
+        } else {
+          const result = await llmGateway.executeLLMOperation(
+            { headers: requestHeaders },
+            {
+              taskCode: 'LLM2_DRAFT' as const,
+              stageCode: 'PAPER_MANUSCRIPT_REVIEW',
+              prompt: await buildPaperReviewPrompt(reviewModel),
+              parameters: {
+                temperature: 0.2,
+                tenantId: tenantContext?.tenantId
+              },
+              idempotencyKey: crypto.randomUUID(),
+              metadata: {
+                sessionId,
+                paperId: sessionId,
+                action: 'run_manuscript_review',
+                module: 'paper_review',
+                purpose: 'paper_manuscript_review',
+                sectionCount: sections.length,
+                citationCount: citations.length,
+                figureCount: figures.length
+              }
+            }
+          );
+
+          if (!result.success || !result.response) {
+            return NextResponse.json({
+              success: false,
+              error: result.error?.message || 'Manuscript review failed'
+            }, { status: 500 });
+          }
+
+          const parsed = extractJsonObjectFromModelOutput(result.response.output || '');
+          issues = Array.isArray(parsed?.issues)
+            ? dedupePendingPaperReviewIssues(
+                parsed.issues.map((issue: any, index: number) =>
+                  normalizePendingPaperReviewIssue(issue, index, reviewedAt)
+                )
+              )
+            : [];
+          summary = normalizePaperReviewSummary({
+            reviewMode: 'quick',
+            reviewLabel: getPaperReviewModeLabel('quick'),
+            ...(parsed?.summary && typeof parsed.summary === 'object' ? parsed.summary : {}),
+            generatedAt: reviewedAt
+          }, issues);
+          tokensUsed = result.response.outputTokens;
+        }
+
+        const savedReview = await prisma.aIReviewResult.create({
+          data: {
+            sessionId,
+            draftId: draft?.id || null,
+            jurisdiction: 'PAPER',
+            issues: issues as any,
+            summary: summary as any,
+            tokensUsed,
+            reviewedAt: new Date(reviewedAt)
+          }
+        });
 
         return NextResponse.json({
           success: true,
+          reviewId: savedReview.id,
+          reviewMode,
+          issues,
+          summary,
+          reviewedAt
+        });
+      }
+
+      case 'preview_review_fix': {
+        const payload = reviewFixPreviewSchema.parse(body);
+
+        const [draft, researchTopic, reviewBundle, citations, figures] = await Promise.all([
+          getPaperDraft(sessionId),
+          prisma.researchTopic.findUnique({ where: { sessionId } }),
+          getPersistedPaperReview(sessionId, payload.reviewId),
+          citationService.getCitationsForSession(sessionId),
+          loadPaperReviewFigureEntries(sessionId)
+        ]);
+
+        if (!reviewBundle?.normalized) {
+          return NextResponse.json({ success: false, error: 'Review not found' }, { status: 404 });
+        }
+
+        const reviewRecord = reviewBundle.normalized;
+        const issue = reviewRecord.issues.find((entry) => entry.id === payload.issueId);
+        if (!issue) {
+          return NextResponse.json({ success: false, error: 'Review issue not found' }, { status: 404 });
+        }
+        if (issue.fixType !== 'rewrite_fixable') {
+          return NextResponse.json({ success: false, error: 'This issue requires manual or evidence-based follow-up' }, { status: 400 });
+        }
+        if (issue.status !== 'pending') {
+          return NextResponse.json({ success: false, error: 'This issue has already been resolved or ignored' }, { status: 409 });
+        }
+
+        const sectionMap = buildPaperDraftSectionMap(draft, researchTopic);
+        const targetSectionKey = normalizeSectionKey(issue.sectionKey);
+        if (!targetSectionKey || targetSectionKey === 'manuscript') {
+          return NextResponse.json({
+            success: false,
+            error: 'This recommendation is not tied to a single editable section. Resolve it manually from the review report.'
+          }, { status: 400 });
+        }
+        const originalContent = String(sectionMap[targetSectionKey] || '');
+
+        const relatedSectionKeys = Array.from(new Set([
+          ...issue.relatedSections.map((sectionKey) => normalizeSectionKey(sectionKey)),
+          issue.reviewDimension === 'cross_section_consistency' || issue.reviewDimension === 'publication_risk'
+            ? 'abstract'
+            : '',
+          issue.reviewDimension === 'cross_section_consistency' || issue.reviewDimension === 'claim_evidence_alignment'
+            ? 'conclusion'
+            : ''
+        ].filter(Boolean)));
+
+        const relatedSections = relatedSectionKeys
+          .filter((sectionKey) => sectionKey !== targetSectionKey && String(sectionMap[sectionKey] || '').trim())
+          .slice(0, 4)
+          .map((sectionKey) => ({
+            sectionKey,
+            sectionLabel: SECTION_DISPLAY_NAMES[sectionKey] || formatSectionLabel(sectionKey),
+            content: String(sectionMap[sectionKey] || '')
+          }));
+
+        const figureIdSet = new Set(issue.relatedFigureIds);
+        for (const figureNo of extractFigureNumbersFromText(originalContent)) {
+          const figure = figures.find((entry) => entry.figureNo === figureNo);
+          if (figure) {
+            figureIdSet.add(figure.id);
+          }
+        }
+        for (const relatedSection of relatedSections) {
+          for (const figureNo of extractFigureNumbersFromText(relatedSection.content)) {
+            const figure = figures.find((entry) => entry.figureNo === figureNo);
+            if (figure) {
+              figureIdSet.add(figure.id);
+            }
+          }
+        }
+
+        const relevantFigures = figures.filter((figure) => figureIdSet.has(figure.id)).slice(0, 6);
+        const citationKeys = new Set<string>();
+        for (const key of extractCitationKeys(originalContent)) citationKeys.add(key);
+        for (const relatedSection of relatedSections) {
+          for (const key of extractCitationKeys(relatedSection.content)) citationKeys.add(key);
+        }
+        const relevantCitations = citations.filter((citation) => citationKeys.has(citation.citationKey));
+
+        const result = await llmGateway.executeLLMOperation(
+          { headers: requestHeaders },
+          {
+            taskCode: 'LLM2_DRAFT' as const,
+            stageCode: 'PAPER_MANUSCRIPT_IMPROVE',
+            prompt: await buildPaperReviewFixPrompt({
+              issue,
+              targetSectionContent: originalContent,
+              relatedSections,
+              relevantFigures,
+              relevantCitations
+            }),
+            parameters: {
+              temperature: 0.15,
+              tenantId: tenantContext?.tenantId
+            },
+            idempotencyKey: crypto.randomUUID(),
+            metadata: {
+              sessionId,
+              paperId: sessionId,
+              reviewId: payload.reviewId,
+              issueId: payload.issueId,
+              sectionKey: targetSectionKey,
+              action: 'preview_review_fix',
+              module: 'paper_review',
+              purpose: 'paper_manuscript_improve_preview'
+            }
+          }
+        );
+
+        if (!result.success || !result.response) {
+          return NextResponse.json({
+            success: false,
+            error: result.error?.message || 'Unable to preview manuscript improvement'
+          }, { status: 500 });
+        }
+
+        const fixedContent = polishDraftMarkdown(String(result.response.output || '').trim());
+
+        return NextResponse.json({
+          success: true,
+          reviewId: payload.reviewId,
+          issueId: payload.issueId,
+          sectionKey: targetSectionKey,
+          originalContent,
           fixedContent,
+          diffSummary: buildPaperFixSummary(originalContent, fixedContent),
+          tokensUsed: result.response.outputTokens
+        });
+      }
+
+      case 'apply_review_fix': {
+        const payload = applyReviewFixSchema.parse(body);
+
+        const [draft, researchTopic, reviewBundle] = await Promise.all([
+          getPaperDraft(sessionId),
+          prisma.researchTopic.findUnique({ where: { sessionId } }),
+          getPersistedPaperReview(sessionId, payload.reviewId)
+        ]);
+
+        if (!reviewBundle?.normalized) {
+          return NextResponse.json({ success: false, error: 'Review not found' }, { status: 404 });
+        }
+
+        const reviewRecord = reviewBundle.normalized;
+        const persistedReview = reviewBundle.review;
+        const issue = reviewRecord.issues.find((entry) => entry.id === payload.issueId);
+        if (!issue) {
+          return NextResponse.json({ success: false, error: 'Review issue not found' }, { status: 404 });
+        }
+        if (issue.fixType !== 'rewrite_fixable') {
+          return NextResponse.json({ success: false, error: 'This issue requires manual or evidence-based follow-up' }, { status: 400 });
+        }
+        if (issue.status !== 'pending') {
+          return NextResponse.json({ success: false, error: 'This issue has already been resolved or ignored' }, { status: 409 });
+        }
+
+        const sectionMap = buildPaperDraftSectionMap(draft, researchTopic);
+        const targetSectionKey = normalizeSectionKey(issue.sectionKey);
+        if (!targetSectionKey || targetSectionKey === 'manuscript') {
+          return NextResponse.json({
+            success: false,
+            error: 'This recommendation is not tied to a single editable section. Resolve it manually from the review report.'
+          }, { status: 400 });
+        }
+        const originalContent = String(sectionMap[targetSectionKey] || '');
+
+        if (
+          typeof payload.originalContent === 'string'
+          && computeContentFingerprint(payload.originalContent) !== computeContentFingerprint(originalContent)
+        ) {
+          return NextResponse.json({
+            success: false,
+            error: 'The section changed after the preview was generated. Preview the improvement again before applying it.'
+          }, { status: 409 });
+        }
+
+        let fixedContent = polishDraftMarkdown(String(payload.fixedContent || '').trim());
+
+        if (!fixedContent) {
+          const [citations, figures] = await Promise.all([
+            citationService.getCitationsForSession(sessionId),
+            loadPaperReviewFigureEntries(sessionId)
+          ]);
+
+          const relatedSectionKeys = Array.from(new Set([
+            ...issue.relatedSections.map((sectionKey) => normalizeSectionKey(sectionKey)),
+            issue.reviewDimension === 'cross_section_consistency' || issue.reviewDimension === 'publication_risk'
+              ? 'abstract'
+              : '',
+            issue.reviewDimension === 'cross_section_consistency' || issue.reviewDimension === 'claim_evidence_alignment'
+              ? 'conclusion'
+              : ''
+          ].filter(Boolean)));
+
+          const relatedSections = relatedSectionKeys
+            .filter((sectionKey) => sectionKey !== targetSectionKey && String(sectionMap[sectionKey] || '').trim())
+            .slice(0, 4)
+            .map((sectionKey) => ({
+              sectionKey,
+              sectionLabel: SECTION_DISPLAY_NAMES[sectionKey] || formatSectionLabel(sectionKey),
+              content: String(sectionMap[sectionKey] || '')
+            }));
+
+          const figureIdSet = new Set(issue.relatedFigureIds);
+          for (const figureNo of extractFigureNumbersFromText(originalContent)) {
+            const figure = figures.find((entry) => entry.figureNo === figureNo);
+            if (figure) {
+              figureIdSet.add(figure.id);
+            }
+          }
+          for (const relatedSection of relatedSections) {
+            for (const figureNo of extractFigureNumbersFromText(relatedSection.content)) {
+              const figure = figures.find((entry) => entry.figureNo === figureNo);
+              if (figure) {
+                figureIdSet.add(figure.id);
+              }
+            }
+          }
+
+          const relevantFigures = figures.filter((figure) => figureIdSet.has(figure.id)).slice(0, 6);
+          const citationKeys = new Set<string>();
+          for (const key of extractCitationKeys(originalContent)) citationKeys.add(key);
+          for (const relatedSection of relatedSections) {
+            for (const key of extractCitationKeys(relatedSection.content)) citationKeys.add(key);
+          }
+          const relevantCitations = citations.filter((citation) => citationKeys.has(citation.citationKey));
+
+          const result = await llmGateway.executeLLMOperation(
+            { headers: requestHeaders },
+            {
+              taskCode: 'LLM2_DRAFT' as const,
+              stageCode: 'PAPER_MANUSCRIPT_IMPROVE',
+              prompt: await buildPaperReviewFixPrompt({
+                issue,
+                targetSectionContent: originalContent,
+                relatedSections,
+                relevantFigures,
+                relevantCitations
+              }),
+              parameters: {
+                temperature: 0.15,
+                tenantId: tenantContext?.tenantId
+              },
+              idempotencyKey: crypto.randomUUID(),
+              metadata: {
+                sessionId,
+                paperId: sessionId,
+                reviewId: payload.reviewId,
+                issueId: payload.issueId,
+                sectionKey: targetSectionKey,
+                action: 'apply_review_fix',
+                module: 'paper_review',
+                purpose: 'paper_manuscript_improve_apply'
+              }
+            }
+          );
+
+          if (!result.success || !result.response) {
+            return NextResponse.json({
+              success: false,
+              error: result.error?.message || 'Unable to apply manuscript improvement'
+            }, { status: 500 });
+          }
+
+          fixedContent = polishDraftMarkdown(String(result.response.output || '').trim());
+        }
+
+        if (computeContentFingerprint(originalContent) === computeContentFingerprint(fixedContent)) {
+          return NextResponse.json({
+            success: false,
+            error: 'The generated improvement did not produce a material text change'
+          }, { status: 422 });
+        }
+
+        const activeDraft = draft || await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
+        await updateDraftContent(activeDraft.id, targetSectionKey, fixedContent, paperTypeCode);
+
+        const appliedAt = new Date().toISOString();
+        const updatedIssues = reviewRecord.issues.map((entry) =>
+          entry.id === issue.id
+            ? {
+                ...entry,
+                status: 'fixed' as const,
+                createdAt: entry.createdAt || appliedAt
+              }
+            : entry
+        );
+        const updatedSummary = normalizePaperReviewSummary({
+          ...reviewRecord.summary,
+          generatedAt: reviewRecord.summary.generatedAt || appliedAt
+        }, updatedIssues);
+        const updatedFixes = [
+          ...reviewRecord.appliedFixes,
+          {
+            issueId: issue.id,
+            sectionKey: targetSectionKey,
+            status: 'fixed' as const,
+            beforeText: originalContent,
+            afterText: fixedContent,
+            diffSummary: buildPaperFixSummary(originalContent, fixedContent),
+            appliedAt
+          }
+        ];
+        const existingIgnored = Array.isArray(persistedReview.ignoredIssues)
+          ? (persistedReview.ignoredIssues as string[]).filter((issueId) => issueId !== issue.id)
+          : [];
+
+        await prisma.aIReviewResult.update({
+          where: { id: persistedReview.id },
+          data: {
+            issues: updatedIssues as any,
+            summary: updatedSummary as any,
+            appliedFixes: updatedFixes as any,
+            ignoredIssues: existingIgnored as any
+          }
+        });
+
+        return NextResponse.json({
+          success: true,
+          reviewId: persistedReview.id,
+          issueId: issue.id,
+          sectionKey: targetSectionKey,
+          originalContent,
+          fixedContent,
+          diffSummary: buildPaperFixSummary(originalContent, fixedContent),
           saved: true
         });
       }

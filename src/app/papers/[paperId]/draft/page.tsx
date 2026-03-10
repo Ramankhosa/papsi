@@ -11,10 +11,13 @@ import LiteratureSearchStage from '@/components/stages/LiteratureSearchStage';
 import FullTextEvidenceExtractionStage from '@/components/stages/FullTextEvidenceExtractionStage';
 import OutlinePlanningStage from '@/components/stages/OutlinePlanningStage';
 import PaperFigurePlannerStage from '@/components/stages/PaperFigurePlannerStage';
+import PaperReviewStage from '@/components/stages/PaperReviewStage';
+import PaperImproveStage from '@/components/stages/PaperImproveStage';
 import SectionDraftingStage from '@/components/stages/SectionDraftingStage';
 import HumanizationStage from '@/components/stages/HumanizationStage';
 import ReviewExportStage from '@/components/stages/ReviewExportStage';
 import VerticalStageNav from '@/components/drafting/VerticalStageNav';
+import { getLatestPaperReview } from '@/lib/paper-review-utils';
 import { STAGE_ORDER } from '@/lib/stage-navigation-config';
 
 const STAGES = [
@@ -25,6 +28,8 @@ const STAGES = [
   { key: 'FULL_TEXT_EVIDENCE_EXTRACTION', label: 'Full-Text Evidence Extraction', description: 'Extract and validate grounded evidence from full text' },
   { key: 'FIGURE_PLANNER', label: 'Figure Planning', description: 'Plan figures and tables' },
   { key: 'SECTION_DRAFTING', label: 'Section Drafting', description: 'Generate and edit sections' },
+  { key: 'MANUSCRIPT_REVIEW', label: 'Review', description: 'Audit the drafted manuscript' },
+  { key: 'MANUSCRIPT_IMPROVE', label: 'Improve', description: 'Apply review recommendations with diff preview' },
   { key: 'HUMANIZATION', label: 'Humanization', description: 'Humanize sections and validate citations' },
   { key: 'REVIEW_EXPORT', label: 'Review & Export', description: 'Validate and export' }
 ] as const;
@@ -49,6 +54,8 @@ const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
   OUTLINE_PLANNING: OutlinePlanningStage as any,
   FIGURE_PLANNER: PaperFigurePlannerStage as any,
   SECTION_DRAFTING: SectionDraftingStage as any,
+  MANUSCRIPT_REVIEW: PaperReviewStage as any,
+  MANUSCRIPT_IMPROVE: PaperImproveStage as any,
   HUMANIZATION: HumanizationStage as any,
   REVIEW_EXPORT: ReviewExportStage as any
 };
@@ -219,6 +226,8 @@ export default function PaperDraftingPage() {
   const hasDraft = Array.isArray(session?.annexureDrafts)
     ? session.annexureDrafts.some((draft: any) => (draft.jurisdiction || '').toUpperCase() === 'PAPER')
     : false;
+  const latestReview = useMemo(() => getLatestPaperReview(session), [session]);
+  const hasReviewReport = !!latestReview;
 
   const getStageLockReason = (stageKey: StageKey) => {
     switch (stageKey) {
@@ -241,6 +250,16 @@ export default function PaperDraftingPage() {
         return hasPaperType && hasSectionConfig ? null : 'Complete paper foundation and research topic first.';
       case 'SECTION_DRAFTING':
         return hasPaperType && hasSectionConfig ? null : 'Complete paper foundation setup before drafting sections.';
+      case 'MANUSCRIPT_REVIEW':
+        if (!(hasPaperType && hasSectionConfig)) {
+          return 'Complete paper foundation setup before reviewing the manuscript.';
+        }
+        return hasDraftContent ? null : 'Draft at least one section before running manuscript review.';
+      case 'MANUSCRIPT_IMPROVE':
+        if (!(hasPaperType && hasSectionConfig)) {
+          return 'Complete paper foundation setup before applying review recommendations.';
+        }
+        return hasReviewReport ? null : 'Run the Review stage first to generate a persisted review report.';
       case 'HUMANIZATION':
         if (!(hasPaperType && hasSectionConfig)) {
           return 'Complete paper foundation setup before humanizing sections.';
@@ -251,9 +270,14 @@ export default function PaperDraftingPage() {
           return 'Complete paper foundation first.';
         }
         if (requiredSectionKeys.length === 0) {
-          return hasDraft ? null : 'Generate at least one section before review.';
+          return hasDraft
+            ? (hasReviewReport ? null : 'Run the Review stage before export.')
+            : 'Generate at least one section before review.';
         }
-        return hasRequiredSections ? null : 'Complete all required sections before review.';
+        if (!hasRequiredSections) {
+          return 'Complete all required sections before review.'
+        }
+        return hasReviewReport ? null : 'Run the Review stage before export.';
       default:
         return null;
     }
@@ -273,14 +297,18 @@ export default function PaperDraftingPage() {
         return hasPaperType && hasSectionConfig;
       case 'SECTION_DRAFTING':
         return hasPaperType && hasSectionConfig;
+      case 'MANUSCRIPT_REVIEW':
+        return hasPaperType && hasSectionConfig && hasDraftContent;
+      case 'MANUSCRIPT_IMPROVE':
+        return hasPaperType && hasSectionConfig && hasReviewReport;
       case 'HUMANIZATION':
         return hasPaperType && hasSectionConfig && hasDraftContent;
       case 'REVIEW_EXPORT':
         if (!hasPaperType) return false;
         if (requiredSectionKeys.length === 0) {
-          return hasDraft;
+          return hasDraft && hasReviewReport;
         }
-        return hasRequiredSections;
+        return hasRequiredSections && hasReviewReport;
       default:
         return true;
     }

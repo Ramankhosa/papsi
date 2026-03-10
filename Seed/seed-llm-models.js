@@ -761,6 +761,8 @@ async function main() {
     { code: 'PAPER_DIAGRAM_FROM_TEXT', displayName: 'Diagram From Text', featureCode: 'PAPER_DRAFTING', sortOrder: 5, description: 'Create a diagram directly from selected paper text' },
     { code: 'PAPER_SKETCH_GENERATION', displayName: 'Paper Sketch Generation', featureCode: 'PAPER_DRAFTING', sortOrder: 6, description: 'Generate scientific figure sketches/images' },
     { code: 'PAPER_FIGURE_METADATA_INFER', displayName: 'Paper Figure Metadata Inference', featureCode: 'PAPER_DRAFTING', sortOrder: 7, description: 'Infer concise metadata from generated figure images using a low-cost vision model' },
+    { code: 'PAPER_MANUSCRIPT_REVIEW', displayName: 'Paper Manuscript Review', featureCode: 'PAPER_DRAFTING', sortOrder: 8, description: 'Run a structured manuscript audit across sections, evidence, citations, and figure references' },
+    { code: 'PAPER_MANUSCRIPT_IMPROVE', displayName: 'Paper Manuscript Improve', featureCode: 'PAPER_DRAFTING', sortOrder: 9, description: 'Apply approved review recommendations to improve the manuscript section by section' },
 
     // === IDEATION ENGINE STAGES (Mind-Map Patent Ideation) ===
     { code: 'IDEATION_NORMALIZE', displayName: 'Seed Normalization', featureCode: 'IDEATION', sortOrder: 1, description: 'Extracts structured information from the seed input (core entity, goal, constraints, unknowns, contradictions)' },
@@ -872,6 +874,8 @@ async function main() {
     'PAPER_DIAGRAM_FROM_TEXT':            { maxTokensIn: 48000,  maxTokensOut: 12000 },
     'PAPER_SKETCH_GENERATION':            { maxTokensIn: 32000,  maxTokensOut: 12000 },
     'PAPER_FIGURE_METADATA_INFER':        { maxTokensIn: 16000,  maxTokensOut: 4000 },
+    'PAPER_MANUSCRIPT_REVIEW':            { maxTokensIn: 96000,  maxTokensOut: 16000 },
+    'PAPER_MANUSCRIPT_IMPROVE':           { maxTokensIn: 64000,  maxTokensOut: 16000 },
     // IDEATION stages (Mind-Map Patent Ideation Engine) - GENEROUS for creative work
     'IDEATION_NORMALIZE':                 { maxTokensIn: 20000,  maxTokensOut: 8192 },
     'IDEATION_CLASSIFY':                  { maxTokensIn: 20000,  maxTokensOut: 8192 },
@@ -942,6 +946,8 @@ async function main() {
       'PAPER_DIAGRAM_FROM_TEXT':            'gpt-4o',
       'PAPER_SKETCH_GENERATION':            'gemini-3.1-flash-image',
       'PAPER_FIGURE_METADATA_INFER':        'gpt-4o-mini',
+      'PAPER_MANUSCRIPT_REVIEW':            'gpt-5.2',
+      'PAPER_MANUSCRIPT_IMPROVE':           'gpt-5.2',
       // IDEATION stages - Use Pro for heavy reasoning, Flash Lite for lighter tasks
       'IDEATION_NORMALIZE':                 'gemini-2.5-flash-lite',
       'IDEATION_CLASSIFY':                  'gemini-2.5-flash-lite',
@@ -1007,6 +1013,8 @@ async function main() {
       'PAPER_DIAGRAM_FROM_TEXT':            'gpt-5.2',
       'PAPER_SKETCH_GENERATION':            'gemini-3.1-flash-image',
       'PAPER_FIGURE_METADATA_INFER':        'gpt-4o-mini',
+      'PAPER_MANUSCRIPT_REVIEW':            'gpt-5.2',
+      'PAPER_MANUSCRIPT_IMPROVE':           'gpt-5.2',
       // IDEATION stages - Pro tier: GPT-5 for creative, Gemini Pro for analysis
       'IDEATION_NORMALIZE':                 'gemini-2.5-pro',
       'IDEATION_CLASSIFY':                  'gemini-2.5-pro',
@@ -1072,6 +1080,8 @@ async function main() {
       'PAPER_DIAGRAM_FROM_TEXT':            'gpt-5.2-thinking',
       'PAPER_SKETCH_GENERATION':            'gemini-3.1-flash-image',
       'PAPER_FIGURE_METADATA_INFER':        'gpt-4o-mini',
+      'PAPER_MANUSCRIPT_REVIEW':            'gpt-5.2',
+      'PAPER_MANUSCRIPT_IMPROVE':           'gpt-5.2',
       // IDEATION stages - Enterprise tier: Best models for maximum quality
       'IDEATION_NORMALIZE':                 'gpt-5-mini',
       'IDEATION_CLASSIFY':                  'gpt-5-mini',

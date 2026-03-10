@@ -22,10 +22,13 @@ import LiteratureSearchStage from '@/components/stages/LiteratureSearchStage'
 import FullTextEvidenceExtractionStage from '@/components/stages/FullTextEvidenceExtractionStage'
 import OutlinePlanningStage from '@/components/stages/OutlinePlanningStage'
 import PaperFigurePlannerStage from '@/components/stages/PaperFigurePlannerStage'
+import PaperReviewStage from '@/components/stages/PaperReviewStage'
+import PaperImproveStage from '@/components/stages/PaperImproveStage'
 import SectionDraftingStage from '@/components/stages/SectionDraftingStage'
 import HumanizationStage from '@/components/stages/HumanizationStage'
 import ReviewExportStage from '@/components/stages/ReviewExportStage'
 import PaperVerticalStageNav from '@/components/stages/PaperVerticalStageNav'
+import { getLatestPaperReview } from '@/lib/paper-review-utils'
 
 const STAGES = [
   { key: 'OUTLINE_PLANNING', label: 'Paper Foundation', description: 'Set up paper type & structure' },
@@ -35,6 +38,8 @@ const STAGES = [
   { key: 'FULL_TEXT_EVIDENCE_EXTRACTION', label: 'Full-Text Evidence Extraction', description: 'Extract and validate grounded evidence from full text' },
   { key: 'FIGURE_PLANNER', label: 'Figure Planning', description: 'Plan figures and tables' },
   { key: 'SECTION_DRAFTING', label: 'Section Drafting', description: 'Generate and edit sections' },
+  { key: 'MANUSCRIPT_REVIEW', label: 'Review', description: 'Audit the drafted manuscript' },
+  { key: 'MANUSCRIPT_IMPROVE', label: 'Improve', description: 'Apply review recommendations with diff preview' },
   { key: 'HUMANIZATION', label: 'Humanization', description: 'Humanize sections and validate citations' },
   { key: 'REVIEW_EXPORT', label: 'Review & Export', description: 'Validate and export' }
 ] as const
@@ -62,6 +67,8 @@ const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
   OUTLINE_PLANNING: OutlinePlanningStage as any,
   FIGURE_PLANNER: PaperFigurePlannerStage as any,
   SECTION_DRAFTING: SectionDraftingStage as any,
+  MANUSCRIPT_REVIEW: PaperReviewStage as any,
+  MANUSCRIPT_IMPROVE: PaperImproveStage as any,
   HUMANIZATION: HumanizationStage as any,
   REVIEW_EXPORT: ReviewExportStage as any
 }
@@ -74,6 +81,8 @@ const STAGE_ORDER: StageKey[] = [
   'FULL_TEXT_EVIDENCE_EXTRACTION',
   'FIGURE_PLANNER',
   'SECTION_DRAFTING',
+  'MANUSCRIPT_REVIEW',
+  'MANUSCRIPT_IMPROVE',
   'HUMANIZATION',
   'REVIEW_EXPORT'
 ]
@@ -109,6 +118,31 @@ interface PaperSession {
   literatureReviewStatus?: string
   createdAt: string
   updatedAt: string
+}
+
+function parsePaperDraftSections(session: PaperSession | null): Record<string, string> {
+  const drafts = Array.isArray(session?.annexureDrafts) ? session.annexureDrafts : []
+  const paperDraft = drafts
+    .filter((draft: any) => String(draft?.jurisdiction || '').toUpperCase() === 'PAPER')
+    .sort((left: any, right: any) => (right?.version || 0) - (left?.version || 0))[0]
+
+  if (!paperDraft?.extraSections) return {}
+  if (typeof paperDraft.extraSections === 'string') {
+    try {
+      return JSON.parse(paperDraft.extraSections) as Record<string, string>
+    } catch {
+      return {}
+    }
+  }
+
+  return typeof paperDraft.extraSections === 'object'
+    ? paperDraft.extraSections as Record<string, string>
+    : {}
+}
+
+function countWords(value: string): number {
+  const text = String(value || '').replace(/<[^>]*>/g, ' ').trim()
+  return text ? text.split(/\s+/).filter(Boolean).length : 0
 }
 
 export default function PaperSessionPage() {
@@ -249,6 +283,34 @@ export default function PaperSessionPage() {
         return Boolean(label) && label !== 'LIT_ONLY'
       }).length
     : 0
+  const paperDraftSections = useMemo(() => parsePaperDraftSections(session), [session])
+  const hasDraftContent = useMemo(
+    () => Object.values(paperDraftSections).some(value => countWords(String(value || '')) > 0),
+    [paperDraftSections]
+  )
+  const requiredSectionKeys = useMemo(() => {
+    const requiredSections = session?.paperType?.requiredSections
+    if (Array.isArray(requiredSections)) {
+      return requiredSections.map((section: any) => String(section)).filter(Boolean)
+    }
+    if (typeof requiredSections === 'string') {
+      try {
+        const parsed = JSON.parse(requiredSections)
+        if (Array.isArray(parsed)) {
+          return parsed.map((section: any) => String(section)).filter(Boolean)
+        }
+      } catch {
+        return []
+      }
+    }
+    return []
+  }, [session?.paperType?.requiredSections])
+  const hasRequiredSections = useMemo(() => {
+    if (requiredSectionKeys.length === 0) return false
+    return requiredSectionKeys.every(sectionKey => countWords(paperDraftSections[sectionKey] || '') >= 20)
+  }, [paperDraftSections, requiredSectionKeys])
+  const latestReview = useMemo(() => getLatestPaperReview(session), [session])
+  const hasReviewReport = !!latestReview
 
   const getStageLockReason = (stageKey: StageKey): string | null => {
     switch (stageKey) {
@@ -267,6 +329,16 @@ export default function PaperSessionPage() {
           : 'Run Analyze & Map in Literature Search so papers are labeled for deep analysis.'
       case 'SECTION_DRAFTING':
         return hasPaperType ? null : 'Complete paper foundation setup before drafting sections.'
+      case 'MANUSCRIPT_REVIEW':
+        return hasDraftContent ? null : 'Draft at least one section before running manuscript review.'
+      case 'MANUSCRIPT_IMPROVE':
+        return hasReviewReport ? null : 'Run the Review stage first to generate a persisted review report.'
+      case 'HUMANIZATION':
+        return hasDraftContent ? null : 'Draft at least one section before starting humanization.'
+      case 'REVIEW_EXPORT':
+        if (!hasReviewReport) return 'Run the Review stage before export.'
+        if (requiredSectionKeys.length === 0) return null
+        return hasRequiredSections ? null : 'Complete all required sections before export.'
       default:
         return null
     }

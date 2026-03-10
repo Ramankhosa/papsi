@@ -7,14 +7,18 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
+import { prisma } from '@/lib/prisma'
+import { authenticateUser } from '@/lib/auth-middleware'
 import { generatePaperSketch, modifyPaperSketch, PaperSketchMode } from '@/lib/figure-generation/paper-sketch-service'
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image'
+import { inferPaperFigureMetadataFromStoredImage } from '@/lib/figure-generation/paper-figure-metadata'
 
 // Schema for sketch generation request
 const sketchGenerateSchema = z.object({
   mode: z.enum(['SUGGEST', 'GUIDED', 'REFINE']),
   title: z.string().optional(),
   userPrompt: z.string().optional(),
+  suggestionMeta: z.record(z.any()).optional(),
   illustrationSpecV2: z.object({
     layout: z.enum(['PANELS', 'STRIP']).optional(),
     panelCount: z.number().int().min(1).max(8).optional(),
@@ -48,6 +52,90 @@ const sketchModifySchema = z.object({
   modificationRequest: z.string().min(1, 'Modification request is required')
 })
 
+async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
+  const where = user.roles?.includes('SUPER_ADMIN')
+    ? { id: sessionId }
+    : { id: sessionId, userId: user.id }
+
+  return prisma.draftingSession.findFirst({ where })
+}
+
+async function getFigureForSession(sessionId: string, figureId: string) {
+  return prisma.figurePlan.findFirst({
+    where: { id: figureId, sessionId }
+  })
+}
+
+function buildRequestHeaders(request: NextRequest): Record<string, string> {
+  const requestHeaders: Record<string, string> = {}
+  request.headers.forEach((value, key) => {
+    requestHeaders[key] = value
+  })
+  return requestHeaders
+}
+
+async function refreshFigureMetadata(params: {
+  request: NextRequest
+  sessionId: string
+  figureId: string
+  fallbackTitle?: string
+  fallbackCaption?: string
+  fallbackCategory?: string
+  fallbackFigureType?: string
+  overrideSuggestionMeta?: Record<string, unknown> | null
+}) {
+  const figure = await prisma.figurePlan.findFirst({
+    where: { id: params.figureId, sessionId: params.sessionId }
+  })
+
+  if (!figure) return null
+
+  const nodes = (figure.nodes as any) || {}
+  const storedImagePath = typeof nodes.imagePath === 'string' ? nodes.imagePath.trim() : ''
+  const nextNodes = { ...nodes }
+
+  if (!storedImagePath) {
+    await prisma.figurePlan.update({
+      where: { id: figure.id },
+      data: {
+        nodes: {
+          ...nextNodes,
+          inferredImageMeta: null
+        } as any
+      }
+    })
+    return null
+  }
+
+  const inferredImageMeta = await inferPaperFigureMetadataFromStoredImage({
+    requestHeaders: buildRequestHeaders(params.request),
+    imagePath: storedImagePath,
+    title: figure.title || params.fallbackTitle || `Figure ${figure.figureNo}`,
+    caption: (typeof nodes.caption === 'string' && nodes.caption.trim())
+      ? nodes.caption
+      : figure.description || params.fallbackCaption || null,
+    category: String(nodes.category || params.fallbackCategory || 'ILLUSTRATED_FIGURE'),
+    figureType: String(nodes.figureType || params.fallbackFigureType || 'sketch'),
+    suggestionMeta: params.overrideSuggestionMeta
+      || (nodes.suggestionMeta && typeof nodes.suggestionMeta === 'object'
+        ? nodes.suggestionMeta as Record<string, unknown>
+        : null)
+  })
+
+  await prisma.figurePlan.update({
+    where: { id: figure.id },
+    data: {
+      nodes: {
+        ...nextNodes,
+        suggestionMeta: params.overrideSuggestionMeta ?? nextNodes.suggestionMeta ?? null,
+        inferredImageMeta: inferredImageMeta ?? null
+      } as any
+    }
+  })
+
+  return inferredImageMeta
+}
+
 /**
  * POST - Generate a new sketch or update existing figure with sketch
  */
@@ -58,11 +146,15 @@ export async function POST(
   try {
     const params = await context.params
     const { paperId, figureId } = params
-    
-    // Get auth token
-    const authHeader = request.headers.get('authorization')
-    if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const { user, error } = await authenticateUser(request)
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 })
+    }
+
+    const session = await getSessionForUser(paperId, user)
+    if (!session) {
+      return NextResponse.json({ error: 'Paper session not found' }, { status: 404 })
     }
 
     // Parse and validate body
@@ -97,6 +189,12 @@ export async function POST(
     // Generate sketch
     // Note: figureId can be 'new' for creating a new figure
     const isNewFigure = figureId === 'new'
+    if (!isNewFigure) {
+      const figure = await getFigureForSession(paperId, figureId)
+      if (!figure) {
+        return NextResponse.json({ error: 'Figure not found' }, { status: 404 })
+      }
+    }
     
     const result = await generatePaperSketch({
       paperId,
@@ -112,16 +210,32 @@ export async function POST(
       uploadedImageMimeType: data.uploadedImageMimeType,
       modificationRequest: data.modificationRequest,
       style: data.style
-    }, 'system', undefined)
+    }, user.id, session.tenantId || undefined)
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 500 })
     }
 
+    const targetFigureId = result.figureId || (!isNewFigure ? figureId : undefined)
+    let inferredImageMeta = null
+    if (targetFigureId) {
+      inferredImageMeta = await refreshFigureMetadata({
+        request,
+        sessionId: paperId,
+        figureId: targetFigureId,
+        fallbackTitle: data.title,
+        fallbackCaption: data.userPrompt,
+        fallbackCategory: 'ILLUSTRATED_FIGURE',
+        fallbackFigureType: 'sketch',
+        overrideSuggestionMeta: data.suggestionMeta || null
+      })
+    }
+
     return NextResponse.json({
       success: true,
       figureId: result.figureId,
-      imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, result.imagePath)
+      imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, result.imagePath),
+      inferredImageMeta
     })
 
   } catch (error: any) {
@@ -142,12 +256,21 @@ export async function PATCH(
 ) {
   try {
     const params = await context.params
-    const { figureId } = params
-    
-    // Get auth token
-    const authHeader = request.headers.get('authorization')
-    if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const { paperId, figureId } = params
+
+    const { user, error } = await authenticateUser(request)
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 })
+    }
+
+    const session = await getSessionForUser(paperId, user)
+    if (!session) {
+      return NextResponse.json({ error: 'Paper session not found' }, { status: 404 })
+    }
+
+    const figure = await getFigureForSession(paperId, figureId)
+    if (!figure) {
+      return NextResponse.json({ error: 'Figure not found' }, { status: 404 })
     }
 
     // Parse and validate body
@@ -167,18 +290,29 @@ export async function PATCH(
     const result = await modifyPaperSketch(
       figureId,
       modificationRequest,
-      'system',
-      undefined
+      user.id,
+      session.tenantId || undefined
     )
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 500 })
     }
 
+    const inferredImageMeta = await refreshFigureMetadata({
+      request,
+      sessionId: paperId,
+      figureId,
+      fallbackTitle: figure.title,
+      fallbackCaption: figure.description || undefined,
+      fallbackCategory: String((figure.nodes as any)?.category || 'ILLUSTRATED_FIGURE'),
+      fallbackFigureType: String((figure.nodes as any)?.figureType || 'sketch')
+    })
+
     return NextResponse.json({
       success: true,
       figureId: result.figureId,
-      imagePath: resolvePaperFigureImageUrl(params.paperId, result.figureId || figureId, result.imagePath)
+      imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, result.imagePath),
+      inferredImageMeta
     })
 
   } catch (error: any) {

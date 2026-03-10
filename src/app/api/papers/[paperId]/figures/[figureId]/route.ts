@@ -54,7 +54,8 @@ function toResponse(plan: any) {
     status,
     imagePath,
     generatedCode: meta.generatedCode || null,
-    suggestionMeta: meta.suggestionMeta || null
+    suggestionMeta: meta.suggestionMeta || null,
+    inferredImageMeta: meta.inferredImageMeta || null
   };
 }
 
@@ -170,7 +171,7 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
       await deleteImageFile(imagePath);
 
       // Remove generation-related fields while keeping plan metadata
-      const keysToRemove = ['imagePath', 'generatedCode', 'status', 'checksum', 'fileSize', 'generatedAt', 'source', 'lastModificationRequest'];
+      const keysToRemove = ['imagePath', 'generatedCode', 'status', 'checksum', 'fileSize', 'generatedAt', 'source', 'lastModificationRequest', 'inferredImageMeta'];
       const cleanMeta: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(meta)) {
         if (!keysToRemove.includes(key)) {

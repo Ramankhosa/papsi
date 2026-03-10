@@ -23,6 +23,7 @@ import {
   BookOpen,
   Target
 } from 'lucide-react'
+import { countPendingRewriteIssues, getLatestPaperReview } from '@/lib/paper-review-utils'
 
 // ============================================================================
 // Types
@@ -347,6 +348,35 @@ function getDraftReadyStatus(session: any): SubStageStatus {
   return hasContent ? 'completed' : 'pending'
 }
 
+function getPaperReviewStatus(session: any): SubStageStatus {
+  return getLatestPaperReview(session) ? 'completed' : 'pending'
+}
+
+function getPaperImproveStatus(session: any): SubStageStatus {
+  const latestReview = getLatestPaperReview(session)
+  if (!latestReview) return 'pending'
+
+  const pendingRewriteIssues = countPendingRewriteIssues(latestReview)
+  const fixedRewriteIssues = latestReview.issues.filter(
+    issue => issue.fixType === 'rewrite_fixable' && issue.status === 'fixed'
+  ).length
+
+  if (pendingRewriteIssues === 0) return 'completed'
+  if (fixedRewriteIssues > 0) return 'in_progress'
+  return 'pending'
+}
+
+function getManualFollowUpStatus(session: any): SubStageStatus {
+  const latestReview = getLatestPaperReview(session)
+  if (!latestReview) return 'pending'
+
+  const manualPendingIssues = latestReview.issues.filter(
+    issue => issue.fixType !== 'rewrite_fixable' && issue.status === 'pending'
+  ).length
+
+  return manualPendingIssues > 0 ? 'in_progress' : 'completed'
+}
+
 // ============================================================================
 // Stage Definitions
 // ============================================================================
@@ -594,9 +624,59 @@ const STAGE_DEFINITIONS: StageDefinition[] = [
     label: 'Section Drafting',
     icon: FileText,
     description: 'Draft each section',
-    weight: 25,
+    weight: 24,
     subStages: [],
     getSubStages: getDraftSectionSubStages
+  },
+  {
+    key: 'MANUSCRIPT_REVIEW',
+    label: 'Review',
+    icon: BookOpen,
+    description: 'Audit the drafted manuscript',
+    weight: 10,
+    subStages: [
+      {
+        key: 'review_report',
+        label: 'Review Report',
+        icon: FileText,
+        description: 'Generate the structured manuscript review',
+        required: true,
+        getStatus: (session) => getPaperReviewStatus(session)
+      },
+      {
+        key: 'readiness_assessment',
+        label: 'Readiness Assessment',
+        icon: FileText,
+        description: 'Classify submission readiness and risk',
+        required: true,
+        getStatus: (session) => getPaperReviewStatus(session)
+      }
+    ]
+  },
+  {
+    key: 'MANUSCRIPT_IMPROVE',
+    label: 'Improve',
+    icon: Sparkles,
+    description: 'Apply review recommendations',
+    weight: 10,
+    subStages: [
+      {
+        key: 'rewrite_fixes',
+        label: 'Rewrite Fixes',
+        icon: FileText,
+        description: 'Apply rewrite-fixable improvements',
+        required: true,
+        getStatus: (session) => getPaperImproveStatus(session)
+      },
+      {
+        key: 'manual_follow_up',
+        label: 'Manual Follow-Up',
+        icon: FileText,
+        description: 'Track evidence-dependent and manual issues',
+        required: false,
+        getStatus: (session) => getManualFollowUpStatus(session)
+      }
+    ]
   },
   {
     key: 'HUMANIZATION',

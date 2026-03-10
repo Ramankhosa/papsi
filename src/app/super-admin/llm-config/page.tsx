@@ -123,8 +123,8 @@ const VISIBLE_STAGE_CODES_BY_FEATURE: Partial<Record<string, Set<string>>> = {
     'PAPER_REWRITER',
     'PAPER_REVIEW_GAPS',
     'PAPER_REVIEW_COHERENCE',
-    'PAPER_AI_REVIEW',
-    'PAPER_AI_FIX',
+    'PAPER_MANUSCRIPT_REVIEW',
+    'PAPER_MANUSCRIPT_IMPROVE',
   ])
 }
 
@@ -428,15 +428,15 @@ const STAGE_CONTROL_HELP: Record<string, StageHelpInfo> = {
     responsibility: 'Deep analysis mapping step that maps extracted Evidence Cards to blueprint dimensions (sectionKey/dimension/useAs) and also supports coherence-oriented review tasks.',
     tip: 'Primary Deep Analysis mapping gateway; prioritize structured JSON reliability and reasoning.'
   },
-  PAPER_AI_REVIEW: {
-    summary: 'Automated draft quality review.',
-    responsibility: 'Performs high-level quality checks before fix/rewrite loops.',
-    tip: 'Reasoning quality matters more than raw speed.'
+  PAPER_MANUSCRIPT_REVIEW: {
+    summary: 'Structured manuscript review.',
+    responsibility: 'Runs the post-drafting review stage and produces the persisted review report used by the Improve stage.',
+    tip: 'Prefer high-reasoning, long-context models because the full manuscript, citations, and figure context may be inspected together.'
   },
-  PAPER_AI_FIX: {
-    summary: 'Automated remediation pass.',
-    responsibility: 'Applies structured fixes based on review findings to improve clarity and compliance.',
-    tip: 'Use models with strong instruction-following and edit fidelity.'
+  PAPER_MANUSCRIPT_IMPROVE: {
+    summary: 'Review-driven manuscript improvement.',
+    responsibility: 'Executes approved rewrite-fixable recommendations from the latest manuscript review and updates draft sections.',
+    tip: 'Use models with strong edit fidelity and instruction-following to avoid collateral rewrites.'
   },
   PAPER_ARCHETYPE_DETECTION: {
     summary: 'Reference archetype detection.',

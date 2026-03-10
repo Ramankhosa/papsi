@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -416,22 +416,6 @@ function normalizeDimensionResponse(data: any): {
   };
 }
 
-
-// AI Review Issue Type
-interface AIReviewIssue {
-  id: string;
-  sectionKey: string;
-  sectionLabel: string;
-  type: 'error' | 'warning' | 'suggestion';
-  category: 'consistency' | 'citation' | 'completeness' | 'academic' | 'clarity' | 'structure';
-  title: string;
-  description: string;
-  suggestion: string;
-  fixPrompt: string;
-  relatedSections?: string[];
-  severity: number;
-}
-
 // ============================================================================
 // Tooltip Component
 // ============================================================================
@@ -456,365 +440,6 @@ function Tooltip({ content, position = 'bottom', children }: {
       {show && (
         <div className={`absolute z-50 px-2 py-1 text-xs text-white bg-gray-900 rounded shadow-lg whitespace-nowrap ${positionClasses[position]}`}>
           {content}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================================================
-// Inline Diff View Component
-// ============================================================================
-
-function InlineDiffView({ original, revised }: { original: string; revised: string }) {
-  const computeDiff = useMemo(() => {
-    try {
-      if (!original && !revised) return [];
-      if (!original) return [{ type: 'add' as const, text: revised }];
-      if (!revised) return [{ type: 'remove' as const, text: original }];
-      if (original === revised) return [{ type: 'same' as const, text: '(No changes)' }];
-      
-      const MAX_CHARS = 30000;
-      if (original.length > MAX_CHARS || revised.length > MAX_CHARS) {
-        return [{ type: 'same' as const, text: '⚠️ Content too long for diff.' }];
-      }
-      
-      const originalWords = original.split(/(\s+)/);
-      const revisedWords = revised.split(/(\s+)/);
-      const MAX_ELEMENTS = 4000;
-      if (originalWords.length > MAX_ELEMENTS || revisedWords.length > MAX_ELEMENTS) {
-        return [{ type: 'same' as const, text: '⚠️ Content too complex for diff.' }];
-      }
-      
-      const result: Array<{ type: 'same' | 'add' | 'remove'; text: string }> = [];
-      const lcs = (a: string[], b: string[]): number[][] => {
-        const m = a.length, n = b.length;
-        const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
-        for (let i = 1; i <= m; i++) {
-          for (let j = 1; j <= n; j++) {
-            dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
-          }
-        }
-        return dp;
-      };
-      
-      const dp = lcs(originalWords, revisedWords);
-      let i = originalWords.length, j = revisedWords.length;
-      const stack: Array<{ type: 'same' | 'add' | 'remove'; text: string }> = [];
-      while (i > 0 || j > 0) {
-        if (i > 0 && j > 0 && originalWords[i - 1] === revisedWords[j - 1]) {
-          stack.push({ type: 'same', text: originalWords[i - 1] }); i--; j--;
-        } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-          stack.push({ type: 'add', text: revisedWords[j - 1] }); j--;
-        } else if (i > 0) {
-          stack.push({ type: 'remove', text: originalWords[i - 1] }); i--;
-        }
-      }
-      while (stack.length > 0) result.push(stack.pop()!);
-      
-      const merged: typeof result = [];
-      for (const seg of result) {
-        if (merged.length > 0 && merged[merged.length - 1].type === seg.type) {
-          merged[merged.length - 1].text += seg.text;
-        } else {
-          merged.push({ ...seg });
-        }
-      }
-      return merged;
-    } catch {
-      return [{ type: 'same' as const, text: '⚠️ Could not compute diff.' }];
-    }
-  }, [original, revised]);
-  
-  if (computeDiff.length === 0) return <span className="text-gray-400 italic">No changes detected</span>;
-  
-  return (
-    <div className="text-sm leading-relaxed">
-      {computeDiff.map((seg, idx) => {
-        if (seg.type === 'same') return <span key={idx} className="text-gray-700">{seg.text}</span>;
-        if (seg.type === 'add') return <span key={idx} className="bg-emerald-200 text-emerald-900 px-0.5 rounded">{seg.text}</span>;
-        return <span key={idx} className="bg-red-200 text-red-900 line-through px-0.5 rounded">{seg.text}</span>;
-      })}
-    </div>
-  );
-}
-
-// ============================================================================
-// AI Review Panel Component
-// ============================================================================
-
-interface PaperValidationPanelProps {
-  sessionId: string;
-  paperId: string;
-  draft: Record<string, string>;
-  onFix: (sectionKey: string, fixedContent: string) => void;
-  authToken: string | null;
-}
-
-function PaperValidationPanel({ sessionId, paperId, draft, onFix, authToken }: PaperValidationPanelProps) {
-  const [aiIssues, setAiIssues] = useState<AIReviewIssue[]>([]);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiSummary, setAiSummary] = useState<{
-    totalIssues: number; errors: number; warnings: number; suggestions: number;
-    overallScore: number; recommendation: string;
-  } | null>(null);
-  const [currentReviewId, setCurrentReviewId] = useState<string | null>(null);
-  const [lastAICheck, setLastAICheck] = useState<string | null>(null);
-  const [fixingIssue, setFixingIssue] = useState<string | null>(null);
-  const [ignoredIssues, setIgnoredIssues] = useState<Set<string>>(new Set());
-  const [appliedFixes, setAppliedFixes] = useState<Set<string>>(new Set());
-  const [filterType, setFilterType] = useState<'all' | 'error' | 'warning' | 'suggestion'>('all');
-  const [filterCategory, setFilterCategory] = useState<string>('all');
-  const [pendingFix, setPendingFix] = useState<{
-    issue: AIReviewIssue; sectionKey: string; originalContent: string; fixedContent: string;
-  } | null>(null);
-
-  const runAIReview = useCallback(async () => {
-    if (!sessionId || !paperId) return;
-    setAiLoading(true);
-    try {
-      const res = await fetch(`/api/papers/${paperId}/drafting`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken || ''}` },
-        body: JSON.stringify({ action: 'run_ai_review', sessionId, draft })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setAiIssues(data.issues || []);
-        setAiSummary(data.summary || null);
-        setCurrentReviewId(data.reviewId || null);
-        setLastAICheck(new Date().toLocaleTimeString());
-        setIgnoredIssues(new Set());
-        setAppliedFixes(new Set());
-      }
-    } catch (err) {
-      console.error('AI review error:', err);
-    } finally {
-      setAiLoading(false);
-    }
-  }, [sessionId, paperId, draft, authToken]);
-
-  const generateFixPreview = useCallback(async (issue: AIReviewIssue) => {
-    if (!sessionId || !paperId) return;
-    setFixingIssue(issue.id);
-    try {
-      const originalContent = draft[issue.sectionKey] || '';
-      const relatedContent: Record<string, string> = {};
-      if (issue.relatedSections) {
-        for (const key of issue.relatedSections) {
-          if (draft[key]) relatedContent[key] = draft[key];
-        }
-      }
-      const res = await fetch(`/api/papers/${paperId}/drafting`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken || ''}` },
-        body: JSON.stringify({
-          action: 'apply_ai_fix', sessionId, sectionKey: issue.sectionKey, issue,
-          currentContent: originalContent, relatedContent, previewOnly: true
-        })
-      });
-      const data = await res.json();
-      if (data.success && data.fixedContent) {
-        setPendingFix({ issue, sectionKey: issue.sectionKey, originalContent, fixedContent: data.fixedContent });
-      }
-    } catch (err) {
-      console.error('Generate fix preview error:', err);
-    } finally {
-      setFixingIssue(null);
-    }
-  }, [sessionId, paperId, draft, authToken]);
-
-  const approveFix = useCallback(() => {
-    if (!pendingFix) return;
-    onFix(pendingFix.sectionKey, pendingFix.fixedContent);
-    setAppliedFixes(prev => new Set([...Array.from(prev), pendingFix.issue.id]));
-    setAiIssues(prev => prev.filter(i => i.id !== pendingFix.issue.id));
-    setPendingFix(null);
-  }, [pendingFix, onFix]);
-
-  const ignoreIssue = useCallback((issueId: string) => {
-    setIgnoredIssues(prev => new Set(Array.from(prev).concat(issueId)));
-  }, []);
-
-  const allActiveAiIssues = aiIssues.filter(i => !ignoredIssues.has(i.id) && !appliedFixes.has(i.id));
-  const aiErrorCount = allActiveAiIssues.filter(i => i.type === 'error').length;
-  const aiWarningCount = allActiveAiIssues.filter(i => i.type === 'warning').length;
-  const aiSuggestionCount = allActiveAiIssues.filter(i => i.type === 'suggestion').length;
-  const fixedCount = appliedFixes.size;
-  const activeAiIssues = allActiveAiIssues.filter(i => {
-    if (filterType !== 'all' && i.type !== filterType) return false;
-    if (filterCategory !== 'all' && i.category !== filterCategory) return false;
-    return true;
-  });
-  const uniqueCategories = Array.from(new Set(allActiveAiIssues.map(i => i.category)));
-
-  const getCategoryStyle = (category: string) => {
-    const styles: Record<string, { icon: string; bg: string; border: string; text: string }> = {
-      consistency: { icon: '🔗', bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700' },
-      citation: { icon: '📚', bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700' },
-      completeness: { icon: '📋', bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' },
-      academic: { icon: '🎓', bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700' },
-      clarity: { icon: '💡', bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700' },
-      structure: { icon: '🏗️', bg: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700' },
-    };
-    return styles[category] || { icon: '📝', bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700' };
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Intelligence Dashboard */}
-      <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 rounded-2xl shadow-2xl border border-slate-700/50 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-700/50 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg">
-              <span className="text-xl">🔬</span>
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-white">Paper Intelligence</h3>
-              <p className="text-slate-400 text-xs">Academic Quality Analysis</p>
-            </div>
-          </div>
-          {aiSummary ? (
-            <div className="relative">
-              <svg className="w-16 h-16 -rotate-90" viewBox="0 0 36 36">
-                <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" strokeWidth="2" className="text-slate-700" />
-                <circle cx="18" cy="18" r="15" fill="none" strokeWidth="2" strokeLinecap="round"
-                  stroke={aiSummary.overallScore >= 90 ? '#10b981' : aiSummary.overallScore >= 80 ? '#f59e0b' : '#ef4444'}
-                  strokeDasharray={`${aiSummary.overallScore * 0.94} 100`} />
-              </svg>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className={`text-lg font-bold ${aiSummary.overallScore >= 90 ? 'text-emerald-400' : aiSummary.overallScore >= 80 ? 'text-amber-400' : 'text-red-400'}`}>{aiSummary.overallScore}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="text-center px-4 py-2 bg-slate-800/50 rounded-lg border border-slate-700">
-              <div className="text-slate-500 text-xs">Run AI Review</div>
-              <div className="text-slate-400 text-xs">for score</div>
-            </div>
-          )}
-        </div>
-        {aiSummary?.recommendation && (
-          <div className="px-6 py-3 bg-slate-800/30 border-b border-slate-700/50">
-            <div className="flex items-start gap-2">
-              <span className="text-violet-400 mt-0.5">💡</span>
-              <p className="text-sm text-slate-300 leading-relaxed">{aiSummary.recommendation}</p>
-            </div>
-          </div>
-        )}
-        <div className="p-4">
-          <div className="grid grid-cols-4 gap-3">
-            {[
-              { type: 'error', count: aiErrorCount, color: 'red' },
-              { type: 'warning', count: aiWarningCount, color: 'amber' },
-              { type: 'suggestion', count: aiSuggestionCount, color: 'blue' },
-            ].map(({ type, count, color }) => (
-              <button key={type} onClick={() => setFilterType(filterType === type ? 'all' : type as any)}
-                className={`group relative rounded-xl p-3 text-center transition-all ${filterType === type ? `bg-${color}-500/20 ring-2 ring-${color}-500/50` : 'bg-slate-800/50 hover:bg-slate-700/50'}`}>
-                <div className={`text-2xl font-bold text-${color}-400`}>{count}</div>
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider capitalize">{type}s</div>
-              </button>
-            ))}
-            <div className="rounded-xl p-3 text-center bg-slate-800/50">
-              <div className="text-2xl font-bold text-emerald-400">{fixedCount}</div>
-              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Fixed</div>
-            </div>
-          </div>
-        </div>
-        {uniqueCategories.length > 0 && (
-          <div className="px-4 pb-3 flex flex-wrap gap-1.5 justify-center">
-            {uniqueCategories.map(cat => {
-              const style = getCategoryStyle(cat);
-              const count = allActiveAiIssues.filter(i => i.category === cat).length;
-              return (
-                <button key={cat} onClick={() => setFilterCategory(filterCategory === cat ? 'all' : cat)}
-                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium transition-all ${filterCategory === cat ? `${style.bg} ${style.text} ring-1 ${style.border}` : 'bg-slate-800/50 text-slate-400 hover:bg-slate-700/50'}`}>
-                  <span>{style.icon}</span><span className="capitalize">{cat}</span><span className="opacity-60">({count})</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-        <div className="px-4 pb-4">
-          <button onClick={runAIReview} disabled={aiLoading}
-            className="w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg font-medium hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 flex items-center justify-center gap-2 text-sm shadow-lg transition-all">
-            {aiLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Analyzing...</> : <><span>🤖</span> AI Review</>}
-          </button>
-        </div>
-        {lastAICheck && (
-          <div className="px-4 pb-3 text-[10px] text-slate-500 border-t border-slate-700/30 pt-2">
-            🤖 Last check: {lastAICheck} {currentReviewId && <span className="ml-2 font-mono text-slate-600">ID: {currentReviewId.slice(0, 8)}</span>}
-          </div>
-        )}
-      </div>
-
-      {/* Fix Preview Modal */}
-      {pendingFix && (
-        <div className="bg-white rounded-xl border-2 border-emerald-300 shadow-lg overflow-hidden">
-          <div className="px-6 py-4 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-emerald-200 flex items-center justify-between">
-            <div>
-              <h4 className="font-semibold text-gray-900 flex items-center gap-2"><span>🔍</span> Review Changes</h4>
-              <p className="text-sm text-gray-600 mt-1">Section: <strong>{pendingFix.issue.sectionLabel}</strong></p>
-            </div>
-            <button onClick={() => setPendingFix(null)} className="p-2 text-gray-400 hover:text-gray-600">✕</button>
-          </div>
-          <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
-            <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
-              <div className="text-xs font-medium text-amber-700 mb-1">💡 Issue: {pendingFix.issue.title}</div>
-              <p className="text-sm text-amber-800">{pendingFix.issue.description}</p>
-            </div>
-            <div className="bg-white border border-gray-200 rounded-lg p-5 max-h-[400px] overflow-y-auto">
-              <InlineDiffView original={pendingFix.originalContent} revised={pendingFix.fixedContent} />
-            </div>
-          </div>
-          <div className="px-6 py-4 bg-gray-50 border-t flex justify-end gap-3">
-            <button onClick={() => setPendingFix(null)} className="px-4 py-2 bg-white text-gray-700 text-sm rounded-lg border border-gray-300 hover:bg-gray-50">Reject</button>
-            <button onClick={approveFix} className="px-6 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700">Apply Changes</button>
-          </div>
-        </div>
-      )}
-
-      {/* Issues List */}
-      {allActiveAiIssues.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
-            <h4 className="font-medium text-gray-700 text-sm">📋 Issues ({activeAiIssues.length}/{allActiveAiIssues.length})</h4>
-          </div>
-          <div className="divide-y divide-gray-100">
-            {activeAiIssues.map((issue) => {
-              const style = getCategoryStyle(issue.category);
-              return (
-                <div key={issue.id} className={`px-6 py-5 ${style.bg}`}>
-                  <div className="flex items-start gap-4">
-                    <div className="flex flex-col items-center gap-1">
-                      <span className="text-2xl">{style.icon}</span>
-                      <div className="flex gap-0.5">
-                        {[1,2,3,4,5].map(n => (
-                          <div key={n} className={`w-1.5 h-1.5 rounded-full ${n <= issue.severity ? (issue.type === 'error' ? 'bg-red-500' : issue.type === 'warning' ? 'bg-amber-500' : 'bg-blue-500') : 'bg-gray-300'}`} />
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded ${style.bg} ${style.text} border ${style.border}`}>{issue.category}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded ${issue.type === 'error' ? 'bg-red-100 text-red-700' : issue.type === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>{issue.type}</span>
-                        <span className="text-xs text-gray-500">{issue.sectionLabel}</span>
-                      </div>
-                      <h5 className="font-medium text-gray-900 mb-1">{issue.title}</h5>
-                      <p className="text-sm text-gray-600 mb-2">{issue.description}</p>
-                      {issue.suggestion && <div className="text-sm text-gray-700 bg-white/60 rounded p-2 border border-gray-100 mb-3"><strong>💡</strong> {issue.suggestion}</div>}
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => generateFixPreview(issue)} disabled={fixingIssue === issue.id}
-                          className="px-3 py-1.5 bg-violet-600 text-white text-xs rounded-lg hover:bg-violet-700 disabled:opacity-50 flex items-center gap-1">
-                          {fixingIssue === issue.id ? <Loader2 className="w-3 h-3 animate-spin" /> : '🔧'} Auto-Fix
-                        </button>
-                        <button onClick={() => ignoreIssue(issue.id)} className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs rounded-lg hover:bg-gray-200">Ignore</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
         </div>
       )}
     </div>
@@ -3111,13 +2736,6 @@ export default function SectionDraftingStage({
     } as any));
   }, [instructionPopoverKey]);
 
-  // Handle AI fix
-  const handleFix = useCallback((sectionKey: string, fixedContent: string) => {
-    setContent(prev => ({ ...prev, [sectionKey]: fixedContent }));
-    // REMOVED: Auto-switch to preview - stay in edit mode
-    saveSection(sectionKey, fixedContent);
-  }, [saveSection]);
-
   // Total word count
   const totalWordCount = useMemo(() => Object.values(content).reduce((acc, c) => acc + computeWordCount(c), 0), [content]);
   const formatDateTime = useCallback((value: string | null | undefined) => {
@@ -3176,7 +2794,7 @@ export default function SectionDraftingStage({
             <div><h4 className="font-semibold text-gray-900 mb-1">✍️ Always-Edit Mode</h4><p className="text-gray-600 text-xs">Content is always editable. Changes auto-save after 2 seconds of inactivity or when you click away.</p></div>
             <div><h4 className="font-semibold text-gray-900 mb-1">💬 Instructions</h4><p className="text-gray-600 text-xs">Add custom instructions per section. Toggle ON/OFF to control when they're used. Use "Save for all papers" to reuse across drafts.</p></div>
             <div><h4 className="font-semibold text-gray-900 mb-1">📚 Citations</h4><p className="text-gray-600 text-xs">Click the citation button in section toolbar to insert. Generate bibliography uses your selected citation style.</p></div>
-            <div><h4 className="font-semibold text-gray-900 mb-1">🔬 AI Review</h4><p className="text-gray-600 text-xs">Run AI Review to check consistency, citations, and academic quality. Auto-fix issues with one click.</p></div>
+            <div><h4 className="font-semibold text-gray-900 mb-1">Review And Improve</h4><p className="text-gray-600 text-xs">After drafting, use the Review stage for the manuscript audit and the Improve stage to preview and apply revision diffs.</p></div>
           </div>
         </div>
       )}
@@ -4199,11 +3817,6 @@ export default function SectionDraftingStage({
               </div>
             );
           })}
-          {Object.keys(content).some(k => content[k]) && (
-            <div className="mt-12 border-t border-slate-100 pt-6">
-              <PaperValidationPanel sessionId={session?.id || ''} paperId={sessionId} draft={content} onFix={handleFix} authToken={authToken} />
-            </div>
-          )}
         </div>
       </div>
 
@@ -4465,4 +4078,5 @@ export default function SectionDraftingStage({
     </div>
   );
 }
+
 

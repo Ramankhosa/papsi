@@ -193,6 +193,7 @@ async function exportSnapshot(snapshotPath) {
     paperTypeDefinitions: await prisma.paperTypeDefinition.findMany(),
     citationStyleDefinitions: await prisma.citationStyleDefinition.findMany(),
     publicationVenues: await prisma.publicationVenue.findMany(),
+    systemPromptTemplates: await prisma.systemPromptTemplate.findMany(),
     paperSupersetSections: await prisma.paperSupersetSection.findMany(),
     paperTypeSectionPrompts: await prisma.paperTypeSectionPrompt.findMany(),
     countryNames: await prisma.countryName.findMany(),
@@ -251,6 +252,7 @@ async function importSnapshot(snapshotPath) {
     ['publicationVenue', 'publication_venues'],
     ['citationStyleDefinition', 'citation_style_definitions'],
     ['paperTypeDefinition', 'paper_type_definitions'],
+    ['systemPromptTemplate', 'system_prompt_templates'],
   ];
   for (const [delegate, label] of catalogCleanup) {
     try {
@@ -301,6 +303,7 @@ async function importSnapshot(snapshotPath) {
   await createMany('planTaskModelConfig', snapshot.planTaskModelConfigs, 'plan_task_model_configs');
   await createMany('lLMModelPrice', snapshot.lLMModelPrices, 'llm_model_prices');
   await createMany('publicationVenue', snapshot.publicationVenues, 'publication_venues');
+  await createMany('systemPromptTemplate', snapshot.systemPromptTemplates, 'system_prompt_templates');
 
   // Country profiles require existing creator users; fall back to super-admin.
   const existingUsers = await prisma.user.findMany({ select: { id: true } });

@@ -61,6 +61,15 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
       annexureDrafts: true,
       figurePlans: true,
       paperBlueprint: true,
+      aiReviews: {
+        where: {
+          jurisdiction: 'PAPER'
+        },
+        orderBy: {
+          reviewedAt: 'desc'
+        },
+        take: 10
+      },
       paperSections: {
         orderBy: { updatedAt: 'desc' }
       },
@@ -167,6 +176,15 @@ export async function PUT(request: NextRequest, context: { params: { paperId: st
           }
         },
         figurePlans: true,
+        aiReviews: {
+          where: {
+            jurisdiction: 'PAPER'
+          },
+          orderBy: {
+            reviewedAt: 'desc'
+          },
+          take: 10
+        },
         paperSections: {
           orderBy: { updatedAt: 'desc' }
         },

@@ -529,6 +529,13 @@ interface FigureInferenceMeta {
   summary: string;
   visibleElements: string[];
   visibleText: string[];
+  keyVariables: string[];
+  comparedGroups: string[];
+  numericHighlights: string[];
+  observedPatterns: string[];
+  resultDetails: string[];
+  methodologyDetails: string[];
+  discussionCues: string[];
   chartSignals: string[];
   claimsSupported: string[];
   claimsToAvoid: string[];
@@ -578,14 +585,32 @@ function parseFigureInferenceMeta(
 ): FigureInferenceMeta | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
-  const summary = cleanInferenceText(record.summary, 320);
-  const visibleElements = cleanInferenceList(record.visibleElements, 6, 80);
-  const visibleText = cleanInferenceList(record.visibleText, 8, 80);
-  const chartSignals = cleanInferenceList(record.chartSignals, 6, 120);
-  const claimsSupported = cleanInferenceList(record.claimsSupported, 6, 140);
-  const claimsToAvoid = cleanInferenceList(record.claimsToAvoid, 6, 140);
+  const summary = cleanInferenceText(record.summary, 400);
+  const visibleElements = cleanInferenceList(record.visibleElements, 8, 100);
+  const visibleText = cleanInferenceList(record.visibleText, 10, 120);
+  const keyVariables = cleanInferenceList(record.keyVariables, 8, 120);
+  const comparedGroups = cleanInferenceList(record.comparedGroups, 8, 120);
+  const numericHighlights = cleanInferenceList(record.numericHighlights, 8, 140);
+  const observedPatterns = cleanInferenceList(record.observedPatterns, 8, 160);
+  const resultDetails = cleanInferenceList(record.resultDetails, 8, 180);
+  const methodologyDetails = cleanInferenceList(record.methodologyDetails, 8, 180);
+  const discussionCues = cleanInferenceList(record.discussionCues, 8, 180);
+  const chartSignals = cleanInferenceList(record.chartSignals, 8, 160);
+  const claimsSupported = cleanInferenceList(record.claimsSupported, 8, 180);
+  const claimsToAvoid = cleanInferenceList(record.claimsToAvoid, 8, 180);
 
-  if (!summary && visibleElements.length === 0 && visibleText.length === 0 && chartSignals.length === 0) {
+  if (
+    !summary
+    && visibleElements.length === 0
+    && visibleText.length === 0
+    && keyVariables.length === 0
+    && numericHighlights.length === 0
+    && observedPatterns.length === 0
+    && resultDetails.length === 0
+    && methodologyDetails.length === 0
+    && discussionCues.length === 0
+    && chartSignals.length === 0
+  ) {
     return null;
   }
 
@@ -593,6 +618,13 @@ function parseFigureInferenceMeta(
     summary,
     visibleElements,
     visibleText,
+    keyVariables,
+    comparedGroups,
+    numericHighlights,
+    observedPatterns,
+    resultDetails,
+    methodologyDetails,
+    discussionCues,
     chartSignals,
     claimsSupported,
     claimsToAvoid,
@@ -614,25 +646,36 @@ async function inferFigureImageMetadata(params: {
   const suggestionMeta = params.suggestionMeta && typeof params.suggestionMeta === 'object'
     ? params.suggestionMeta
     : null;
-  const prompt = `You are extracting evidence-safe metadata from a research-paper figure image.
+  const prompt = `You are extracting drafting-grade, evidence-safe metadata from a research-paper figure image.
 
 Return ONLY valid JSON with this exact shape:
 {
   "summary": "1-2 sentence visible summary",
-  "visibleElements": ["up to 6 concrete visible elements"],
-  "visibleText": ["up to 8 short labels or text strings that are visibly present"],
-  "chartSignals": ["up to 6 directly visible trends, comparisons, or visual signals"],
-  "claimsSupported": ["up to 6 conservative claims directly supported by the figure"],
-  "claimsToAvoid": ["up to 6 claims that would overreach the visible evidence"]
+  "visibleElements": ["up to 8 concrete visible elements"],
+  "visibleText": ["up to 10 short labels or text strings that are visibly present"],
+  "keyVariables": ["up to 8 variables, metrics, axes, components, or entities visible in the figure"],
+  "comparedGroups": ["up to 8 methods, classes, conditions, cohorts, panels, or groups being compared"],
+  "numericHighlights": ["up to 8 exact values, ranges, counts, percentages, or ranks visibly readable in the figure"],
+  "observedPatterns": ["up to 8 directly visible patterns, comparisons, gradients, peaks, lows, or ordering statements"],
+  "resultDetails": ["up to 8 drafting-ready observations that a Results section can safely report"],
+  "methodologyDetails": ["up to 8 setup, workflow, architecture, or procedural details visible in the figure"],
+  "discussionCues": ["up to 8 restrained interpretation cues, limitations, anomalies, or implications suggested by the visible figure"],
+  "chartSignals": ["up to 8 directly visible trends or signals"],
+  "claimsSupported": ["up to 8 conservative claims directly supported by the figure"],
+  "claimsToAvoid": ["up to 8 claims that would overreach the visible evidence"]
 }
 
 Rules:
-- Describe only what is visible in the image or explicit from visible labels/axes/legends.
-- Use the metadata below only to disambiguate the figure purpose; do not invent unseen details.
-- Keep each list item short and concrete.
-- If text is unreadable or absent, return an empty array for "visibleText".
-- "claimsSupported" must stay strictly observational.
-- "claimsToAvoid" should flag causal, statistical, or performance claims not proven by the image alone.
+- Describe only what is visible in the image or explicit from visible labels, legends, axes, numbers, panels, and annotations.
+- Use the metadata below only to disambiguate purpose; do not invent unseen details.
+- Keep every list item short, concrete, and drafting-usable.
+- If text or numbers are unreadable, return empty arrays rather than guessing.
+- "numericHighlights" must contain only visibly readable values or ranges.
+- "resultDetails" must be observation-only prose that a Results section can say safely.
+- "methodologyDetails" must focus on structure, components, steps, or setup visible in the figure.
+- "discussionCues" can mention anomalies, trade-offs, limitations, or interpretation directions only if visually grounded.
+- "claimsSupported" must stay strictly proportional to visible evidence.
+- "claimsToAvoid" should explicitly flag causal, statistical-significance, generalization, or performance claims not proven by the figure alone.
 
 Figure metadata:
 - Title: ${cleanInferenceText(params.title, 160)}
@@ -1181,21 +1224,19 @@ export async function POST(
               suggestionMeta: sketchMeta
             });
 
-            if (inferredImageMeta) {
-              const latestPlan = await prisma.figurePlan.findUnique({
-                where: { id: figureId }
-              });
-              const latestNodes = (latestPlan?.nodes as any) || {};
-              await prisma.figurePlan.update({
-                where: { id: figureId },
-                data: {
-                  nodes: {
-                    ...latestNodes,
-                    inferredImageMeta
-                  } as any
-                }
-              });
-            }
+            const latestPlan = await prisma.figurePlan.findUnique({
+              where: { id: figureId }
+            });
+            const latestNodes = (latestPlan?.nodes as any) || {};
+            await prisma.figurePlan.update({
+              where: { id: figureId },
+              data: {
+                nodes: {
+                  ...latestNodes,
+                  inferredImageMeta: inferredImageMeta ?? null
+                } as any
+              }
+            });
 
             return NextResponse.json({
               success: true,
@@ -1284,7 +1325,7 @@ export async function POST(
           checksum,
           generatedCode: result.generatedCode,
           fileSize: buffer.length,
-          inferredImageMeta: inferredImageMeta || meta.inferredImageMeta || null,
+          inferredImageMeta: inferredImageMeta ?? null,
           appliedPreferences: normalizedPreferences,
           suggestionMeta: data.suggestionMeta || meta.suggestionMeta || null,
           lastModificationRequest: data.modificationRequest || null,
