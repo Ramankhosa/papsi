@@ -69,6 +69,8 @@ const PROVIDER_COLORS: Record<string, string> = {
   groq: 'bg-pink-100 text-pink-800 border-pink-200'
 }
 
+const RETIRED_MODEL_CODES = new Set(['gpt-5.1-thinking'])
+
 // Show only actively used drafting features in admin LLM control.
 const FEATURE_LABELS: Record<string, string> = {
   PAPER_DRAFTING: 'Paper Drafting',
@@ -80,6 +82,51 @@ const NON_LLM_STAGES = [
   'DRAFT_COMPONENT_PLANNER',  // Manual UI - no LLM
   'DRAFT_EXPORT'              // Document generation - no LLM
 ]
+
+const VISIBLE_STAGE_CODES_BY_FEATURE: Partial<Record<string, Set<string>>> = {
+  PAPER_DRAFTING: new Set([
+    'PAPER_TOPIC_EXTRACT_FROM_FILE',
+    'PAPER_TOPIC_REFINE_QUESTION',
+    'PAPER_CREATE_SECTIONS',
+    'PAPER_FIGURE_SUGGESTION',
+    'PAPER_TOPIC_SUGGEST_KEYWORDS',
+    'PAPER_TOPIC_GENERATE_HYPOTHESIS',
+    'PAPER_CHART_GENERATOR',
+    'PAPER_TOPIC_DRAFT_ABSTRACT',
+    'PAPER_DIAGRAM_GENERATOR',
+    'PAPER_DIAGRAM_FROM_TEXT',
+    'PAPER_TOPIC_FORMULATE_QUESTION',
+    'PAPER_TOPIC_ENHANCE_ALL',
+    'PAPER_SKETCH_GENERATION',
+    'PAPER_ABSTRACT_TITLE',
+    'PAPER_CONTENT_GENERATION',
+    'PAPER_CITATION_FORMATTING',
+    'PAPER_LITERATURE_ANALYSIS',
+    'PAPER_LITERATURE_SEARCH',
+    'LITERATURE_SEARCH',
+    'SEARCH_STRATEGY_PLANNING',
+    'SEARCH_QUERY_GENERATION',
+    'PAPER_LITERATURE_SUMMARIZE',
+    'PAPER_LITERATURE_GAP',
+    'LITERATURE_RELEVANCE',
+    'CITATION_BLUEPRINT_MAPPING',
+    'PAPER_BLUEPRINT_GEN',
+    'RESEARCH_INTENT_LOCK',
+    'ARGUMENT_PLAN',
+    'PAPER_ARCHETYPE_DETECTION',
+    'PAPER_SECTION_DRAFT',
+    'PAPER_SECTION_GEN',
+    'PAPER_SECTION_IMPROVE',
+    'PAPER_MEMORY_EXTRACT',
+    'PAPER_CITATION_FORMAT',
+    'PAPER_TEXT_ACTION',
+    'PAPER_REWRITER',
+    'PAPER_REVIEW_GAPS',
+    'PAPER_REVIEW_COHERENCE',
+    'PAPER_AI_REVIEW',
+    'PAPER_AI_FIX',
+  ])
+}
 
 // Ideation stage metadata - helps Super Admin choose appropriate models
 // Stages marked as 'lightweight' can use faster, cheaper models (Flash, Mini, Haiku)
@@ -414,6 +461,38 @@ function getStageHelpInfo(stage: WorkflowStage): StageHelpInfo {
   }
 }
 
+function isStageVisibleInAdmin(stage: WorkflowStage): boolean {
+  if (!stage.isActive || NON_LLM_STAGES.includes(stage.code)) return false
+  const visibleCodes = VISIBLE_STAGE_CODES_BY_FEATURE[stage.featureCode]
+  return !visibleCodes || visibleCodes.has(stage.code)
+}
+
+function getStageCodeBadgeClasses(stageCode: string): string {
+  if (/^PAPER_TOPIC_|^PAPER_ABSTRACT_TITLE$/.test(stageCode)) {
+    return 'border-sky-700/50 bg-sky-900/30 text-sky-200'
+  }
+  if (/FIGURE|DIAGRAM|SKETCH/.test(stageCode)) {
+    return 'border-fuchsia-700/50 bg-fuchsia-900/25 text-fuchsia-200'
+  }
+  if (/LITERATURE|SEARCH|CITATION_BLUEPRINT_MAPPING/.test(stageCode)) {
+    return 'border-emerald-700/50 bg-emerald-900/25 text-emerald-200'
+  }
+  if (/BLUEPRINT|INTENT|ARGUMENT|ARCHETYPE/.test(stageCode)) {
+    return 'border-amber-700/50 bg-amber-900/25 text-amber-200'
+  }
+  if (/SECTION|CONTENT|MEMORY|TEXT_ACTION|REWRITER|CITATION_FORMAT/.test(stageCode)) {
+    return 'border-cyan-700/50 bg-cyan-900/25 text-cyan-200'
+  }
+  if (/REVIEW|FIX|IMPROVE/.test(stageCode)) {
+    return 'border-rose-700/50 bg-rose-900/25 text-rose-200'
+  }
+  return 'border-slate-600 bg-slate-700/60 text-slate-200'
+}
+
+function isModelAssignable(model: LLMModel): boolean {
+  return model.isActive && !RETIRED_MODEL_CODES.has(model.code)
+}
+
 export default function LLMConfigPage() {
   noStore()
 
@@ -665,8 +744,9 @@ export default function LLMConfigPage() {
 
   // Filter stages by feature and exclude stages that don't use LLMs
   const filteredStages = stages.filter(s =>
-    s.isActive && s.featureCode === selectedFeature && !NON_LLM_STAGES.includes(s.code)
+    s.featureCode === selectedFeature && isStageVisibleInAdmin(s)
   )
+  const assignableModels = models.filter(isModelAssignable)
 
   if (loading) {
     return (
@@ -844,7 +924,14 @@ export default function LLMConfigPage() {
                     <tr key={model.id} className={`hover:bg-slate-700/30 ${!model.isActive ? 'opacity-50' : ''}`}>
                       <td className="px-4 py-3">
                         <div className="font-medium">{model.displayName}</div>
-                        <div className="text-xs text-slate-500">{model.code}</div>
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          <span>{model.code}</span>
+                          {RETIRED_MODEL_CODES.has(model.code) && (
+                            <span className="rounded-full border border-amber-700/50 bg-amber-900/30 px-2 py-0.5 text-[10px] font-medium text-amber-200">
+                              Retired
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium border ${PROVIDER_COLORS[model.provider] || 'bg-slate-600'}`}>
@@ -914,7 +1001,7 @@ export default function LLMConfigPage() {
             </div>
             <div className="p-4">
               {Object.entries(FEATURE_LABELS).map(([featureCode, featureLabel]) => {
-                const featureStages = stages.filter(s => s.featureCode === featureCode)
+                const featureStages = stages.filter(s => s.featureCode === featureCode && isStageVisibleInAdmin(s))
                 if (featureStages.length === 0) return null
 
                 return (
@@ -932,7 +1019,11 @@ export default function LLMConfigPage() {
                             }`}
                           >
                             <div className="font-medium">{stage.displayName}</div>
-                            <div className="text-xs text-slate-500 mt-1">{stage.code}</div>
+                            <div className="mt-1">
+                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${getStageCodeBadgeClasses(stage.code)}`}>
+                                {stage.code}
+                              </span>
+                            </div>
                             <div className="text-sm text-slate-300 mt-2">{stageHelp.summary}</div>
                             <div className="mt-2 p-2 rounded border border-cyan-700/40 bg-cyan-900/20">
                               <div className="text-xs text-cyan-200">
@@ -1041,7 +1132,9 @@ export default function LLMConfigPage() {
                           <span className="px-2 py-1 rounded text-xs font-semibold bg-cyan-900/40 text-cyan-200 border border-cyan-700/40">
                             {item.passLabel}
                           </span>
-                          <span className="text-xs text-slate-400">{stage.code}</span>
+                          <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${getStageCodeBadgeClasses(stage.code)}`}>
+                            {stage.code}
+                          </span>
                         </div>
                         <div className="mt-2 font-medium text-white">{item.title}</div>
                         <div className="text-sm text-slate-300 mt-1">{item.description}</div>
@@ -1098,7 +1191,11 @@ export default function LLMConfigPage() {
                       <div className="flex items-center justify-between">
                         <div className="flex-1">
                           <div className="font-medium">{stage.displayName}</div>
-                          <div className="text-xs text-slate-500">{stage.code}</div>
+                          <div className="mt-1">
+                            <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${getStageCodeBadgeClasses(stage.code)}`}>
+                              {stage.code}
+                            </span>
+                          </div>
                           <div className="text-sm text-slate-300 mt-1">{stageHelp.summary}</div>
                           <div className="mt-2 p-2 rounded border border-cyan-700/40 bg-cyan-900/20 max-w-3xl">
                             <div className="text-xs text-cyan-200">
@@ -1131,7 +1228,7 @@ export default function LLMConfigPage() {
                                                   className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm"
                                                 >
                                                   <option value="">Select model...</option>
-                                                  {models.filter(m => m.isActive).map(model => (
+                                                  {assignableModels.map(model => (
                                                     <option key={model.id} value={model.id}>
                                                       {model.displayName} ({model.provider})
                                                     </option>
@@ -1168,7 +1265,7 @@ export default function LLMConfigPage() {
                             <div>
                               <label className="block text-xs text-slate-400 mb-1">Fallback Models (up to 3)</label>
                               <div className="flex flex-wrap gap-2">
-                                {models.filter(m => m.isActive && m.id !== editingConfig.modelId).slice(0, 10).map(model => {
+                                {assignableModels.filter(m => m.id !== editingConfig.modelId).slice(0, 10).map(model => {
                                   const isSelected = editingConfig.fallbacks.includes(model.id)
                                   const canSelect = editingConfig.fallbacks.length < 3 || isSelected
                                   return (
@@ -1236,16 +1333,21 @@ export default function LLMConfigPage() {
                           <div className="flex items-center gap-4">
                             {config ? (
                                               <div className="flex flex-col gap-1">
-                                                <div className="flex items-center gap-3">
+                                              <div className="flex flex-wrap items-center gap-2">
                                                   <span className={`px-2 py-1 rounded-full text-xs font-medium border ${PROVIDER_COLORS[config.model.provider] || 'bg-slate-600'}`}>
                                                     {config.model.provider}
                                                   </span>
-                                                  <span className="font-medium">{config.model.displayName}</span>
-                                                  {(config.maxTokensIn || config.maxTokensOut) && (
-                                                    <span className="text-xs text-slate-400">
-                                                      {config.maxTokensIn && `in: ${config.maxTokensIn.toLocaleString()}`}
-                                                      {config.maxTokensIn && config.maxTokensOut && ' / '}
-                                                      {config.maxTokensOut && `out: ${config.maxTokensOut.toLocaleString()}`}
+                                                  <span className="rounded-full border border-slate-600 bg-slate-700/60 px-2.5 py-1 text-sm font-semibold text-white">
+                                                    {config.model.displayName}
+                                                  </span>
+                                                  {config.maxTokensIn && (
+                                                    <span className="rounded-full border border-cyan-700/40 bg-cyan-900/20 px-2 py-1 text-[11px] font-medium text-cyan-200">
+                                                      In {config.maxTokensIn.toLocaleString()}
+                                                    </span>
+                                                  )}
+                                                  {config.maxTokensOut && (
+                                                    <span className="rounded-full border border-violet-700/40 bg-violet-900/20 px-2 py-1 text-[11px] font-medium text-violet-200">
+                                                      Out {config.maxTokensOut.toLocaleString()}
                                                     </span>
                                                   )}
                                                 </div>

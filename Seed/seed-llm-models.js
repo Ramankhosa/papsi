@@ -870,7 +870,7 @@ async function main() {
     'PAPER_CHART_GENERATOR':              { maxTokensIn: 32000,  maxTokensOut: 8000 },
     'PAPER_DIAGRAM_GENERATOR':            { maxTokensIn: 48000,  maxTokensOut: 12000 },
     'PAPER_DIAGRAM_FROM_TEXT':            { maxTokensIn: 48000,  maxTokensOut: 12000 },
-    'PAPER_SKETCH_GENERATION':            { maxTokensIn: 32000,  maxTokensOut: 8000 },
+    'PAPER_SKETCH_GENERATION':            { maxTokensIn: 32000,  maxTokensOut: 12000 },
     'PAPER_FIGURE_METADATA_INFER':        { maxTokensIn: 16000,  maxTokensOut: 4000 },
     // IDEATION stages (Mind-Map Patent Ideation Engine) - GENEROUS for creative work
     'IDEATION_NORMALIZE':                 { maxTokensIn: 20000,  maxTokensOut: 8192 },
@@ -1000,11 +1000,11 @@ async function main() {
       'DIAGRAM_SEQUENCE':                   'gpt-4o',
       'DIAGRAM_BLOCK':                      'gpt-4o',
       // Paper assistant stages
-      'PAPER_CREATE_SECTIONS':              'gpt-5-mini',
-      'PAPER_FIGURE_SUGGESTION':            'gpt-5.1-thinking',
-      'PAPER_CHART_GENERATOR':              'gpt-5.1',
-      'PAPER_DIAGRAM_GENERATOR':            'gpt-5.1-thinking',
-      'PAPER_DIAGRAM_FROM_TEXT':            'gpt-5.1-thinking',
+      'PAPER_CREATE_SECTIONS':              'gpt-5.2',
+      'PAPER_FIGURE_SUGGESTION':            'gpt-5.2',
+      'PAPER_CHART_GENERATOR':              'gemini-2.5-pro',
+      'PAPER_DIAGRAM_GENERATOR':            'gpt-5.2',
+      'PAPER_DIAGRAM_FROM_TEXT':            'gpt-5.2',
       'PAPER_SKETCH_GENERATION':            'gemini-3.1-flash-image',
       'PAPER_FIGURE_METADATA_INFER':        'gpt-4o-mini',
       // IDEATION stages - Pro tier: GPT-5 for creative, Gemini Pro for analysis

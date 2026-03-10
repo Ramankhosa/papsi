@@ -3845,6 +3845,19 @@ export default function SectionDraftingStage({
                                     Clear
                                   </button>
                                 )}
+                                {figurePickerOpenBySection[normalizedKey] && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setFigurePickerOpenBySection(prev => ({
+                                      ...prev,
+                                      [normalizedKey]: false
+                                    }))}
+                                    disabled={!figureInjectionState.enabled || isWorking || autoModeRunning}
+                                    className="rounded-full border border-rose-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Hide
+                                  </button>
+                                )}
                               </>
                             ) : (
                               <span className="text-[11px] text-slate-400">No figures available yet</span>

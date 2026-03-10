@@ -38,6 +38,53 @@ interface StagePlanConfig extends StagePlanConfigInput {
 
 type StageRuntimeConfig = Record<PlanCode, StagePlanConfig>
 
+const MODEL_PREFERENCE_REPLACEMENTS: Record<string, string> = {
+  'gpt-5.1-thinking': 'gpt-5.2',
+}
+
+const PRO_PLAN_PRODUCTION_OVERRIDES: Partial<Record<string, StagePlanConfigInput>> = {
+  PAPER_TOPIC_EXTRACT_FROM_FILE: { modelPreferences: ['gpt-5.2'], maxTokensIn: 96_000, maxTokensOut: 16_000 },
+  PAPER_TOPIC_REFINE_QUESTION: { modelPreferences: ['gpt-5.2'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+  PAPER_TOPIC_SUGGEST_KEYWORDS: { modelPreferences: ['gpt-5-mini'], maxTokensIn: 16_000, maxTokensOut: 8_000 },
+  PAPER_TOPIC_GENERATE_HYPOTHESIS: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 48_000, maxTokensOut: 16_000 },
+  PAPER_TOPIC_DRAFT_ABSTRACT: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 48_000, maxTokensOut: 14_000 },
+  PAPER_TOPIC_FORMULATE_QUESTION: { modelPreferences: ['gpt-5-mini'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+  PAPER_TOPIC_ENHANCE_ALL: { modelPreferences: ['gemini-2.5-flash-lite'], maxTokensIn: 64_000, maxTokensOut: 22_000 },
+  PAPER_ABSTRACT_TITLE: { modelPreferences: ['gpt-5.2'], maxTokensIn: 32_000, maxTokensOut: 14_000 },
+  PAPER_LITERATURE_SEARCH: { modelPreferences: ['gpt-5-mini'], maxTokensIn: 40_000, maxTokensOut: 9_000 },
+  LITERATURE_SEARCH: { modelPreferences: ['gpt-5-mini'], maxTokensIn: 40_000, maxTokensOut: 9_000 },
+  SEARCH_STRATEGY_PLANNING: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 48_000, maxTokensOut: 10_000 },
+  SEARCH_QUERY_GENERATION: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 48_000, maxTokensOut: 10_000 },
+  PAPER_LITERATURE_SUMMARIZE: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 200_000, maxTokensOut: 18_000 },
+  PAPER_LITERATURE_GAP: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 96_000, maxTokensOut: 20_000 },
+  LITERATURE_RELEVANCE: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 80_000, maxTokensOut: 25_000 },
+  CITATION_BLUEPRINT_MAPPING: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 80_000, maxTokensOut: 12_000 },
+  PAPER_LITERATURE_ANALYSIS: { modelPreferences: ['gpt-5.2'], maxTokensIn: 140_000, maxTokensOut: 20_000 },
+  PAPER_BLUEPRINT_GEN: { modelPreferences: ['gpt-5.2'], maxTokensIn: 120_000, maxTokensOut: 24_000 },
+  RESEARCH_INTENT_LOCK: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 64_000, maxTokensOut: 16_000 },
+  ARGUMENT_PLAN: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 64_000, maxTokensOut: 16_000 },
+  PAPER_ARCHETYPE_DETECTION: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 36_000, maxTokensOut: 12_000 },
+  PAPER_SECTION_DRAFT: { modelPreferences: ['gpt-5.2'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
+  PAPER_SECTION_GEN: { modelPreferences: ['gpt-5.2'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
+  PAPER_SECTION_IMPROVE: { modelPreferences: ['gemini-2.5-flash-lite'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
+  PAPER_CREATE_SECTIONS: { modelPreferences: ['gpt-5.2'], maxTokensIn: 24_000, maxTokensOut: 12_000 },
+  PAPER_MEMORY_EXTRACT: { modelPreferences: ['gpt-5-mini'], maxTokensIn: 36_000, maxTokensOut: 8_000 },
+  PAPER_CITATION_FORMAT: { modelPreferences: ['gpt-5-mini'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+  PAPER_CITATION_FORMATTING: { modelPreferences: ['gpt-5-mini'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+  PAPER_CONTENT_GENERATION: { modelPreferences: ['gpt-5.2'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
+  PAPER_TEXT_ACTION: { modelPreferences: ['gpt-5.2'], maxTokensIn: 40_000, maxTokensOut: 12_000 },
+  PAPER_REWRITER: { modelPreferences: ['gpt-5.2'], maxTokensIn: 64_000, maxTokensOut: 16_000 },
+  PAPER_FIGURE_SUGGESTION: { modelPreferences: ['gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 12_000 },
+  PAPER_CHART_GENERATOR: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 32_000, maxTokensOut: 8_000 },
+  PAPER_DIAGRAM_GENERATOR: { modelPreferences: ['gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 12_000 },
+  PAPER_DIAGRAM_FROM_TEXT: { modelPreferences: ['gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 12_000 },
+  PAPER_SKETCH_GENERATION: { modelPreferences: ['gemini-3.1-flash-image'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+  PAPER_REVIEW_GAPS: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 96_000, maxTokensOut: 20_000 },
+  PAPER_REVIEW_COHERENCE: { modelPreferences: ['gpt-5.2'], maxTokensIn: 120_000, maxTokensOut: 20_000 },
+  PAPER_AI_REVIEW: { modelPreferences: ['gpt-5.2'], maxTokensIn: 120_000, maxTokensOut: 20_000 },
+  PAPER_AI_FIX: { modelPreferences: ['gpt-5.2'], maxTokensIn: 120_000, maxTokensOut: 24_000 },
+}
+
 const stagePlan = (
   temperature: number,
   free: StagePlanConfigInput,
@@ -48,6 +95,37 @@ const stagePlan = (
   PRO_PLAN: { ...pro, temperature },
   ENTERPRISE_PLAN: { ...enterprise, temperature },
 })
+
+function sanitizeModelPreferences(modelPreferences: string[]): string[] {
+  const sanitized = new Set<string>()
+
+  for (const preference of modelPreferences) {
+    const replacement = MODEL_PREFERENCE_REPLACEMENTS[preference] ?? preference
+    if (replacement) {
+      sanitized.add(replacement)
+    }
+  }
+
+  return Array.from(sanitized)
+}
+
+function normalizeStageConfig(
+  config: StagePlanConfig,
+  override?: StagePlanConfigInput
+): StagePlanConfig {
+  const mergedConfig = override
+    ? {
+        ...config,
+        ...override,
+        modelPreferences: override.modelPreferences,
+      }
+    : config
+
+  return {
+    ...mergedConfig,
+    modelPreferences: sanitizeModelPreferences(mergedConfig.modelPreferences),
+  }
+}
 
 const publicationStages: StageDefinition[] = [
   // Topic and framing
@@ -686,9 +764,9 @@ async function main() {
   }
 
   const fallbackModelByPlan: Record<PlanCode, typeof defaultModel> = {
-    FREE_PLAN: resolveModel(defaultStageConfigByPlan.FREE_PLAN.modelPreferences, defaultModel),
-    PRO_PLAN: resolveModel(defaultStageConfigByPlan.PRO_PLAN.modelPreferences, defaultModel),
-    ENTERPRISE_PLAN: resolveModel(defaultStageConfigByPlan.ENTERPRISE_PLAN.modelPreferences, defaultModel),
+    FREE_PLAN: resolveModel(normalizeStageConfig(defaultStageConfigByPlan.FREE_PLAN).modelPreferences, defaultModel),
+    PRO_PLAN: resolveModel(normalizeStageConfig(defaultStageConfigByPlan.PRO_PLAN).modelPreferences, defaultModel),
+    ENTERPRISE_PLAN: resolveModel(normalizeStageConfig(defaultStageConfigByPlan.ENTERPRISE_PLAN).modelPreferences, defaultModel),
   }
 
   console.log(`Configuring ${plans.length} active plans with stage model/token settings...`)
@@ -712,7 +790,8 @@ async function main() {
       const config =
         stageConfigs[stage.code]?.[planCode] ||
         defaultStageConfigByPlan[planCode]
-      const normalizedConfig = applyTokenFloors(config)
+      const override = planCode === 'PRO_PLAN' ? PRO_PLAN_PRODUCTION_OVERRIDES[stage.code] : undefined
+      const normalizedConfig = applyTokenFloors(normalizeStageConfig(config, override))
 
       const selectedModel = resolveModel(normalizedConfig.modelPreferences, planFallbackModel)
 
