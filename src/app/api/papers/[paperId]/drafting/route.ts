@@ -6017,12 +6017,152 @@ async function buildDetailedSectionReviewPrompt(params: {
 
 async function buildPaperReviewAggregationPrompt(params: {
   reviewModel: Record<string, any>;
+  contextSectionSummaries: PaperContextSectionSummary[];
   sectionReviewerOutputs: Array<Record<string, any>>;
 }): Promise<string> {
+  const contextSummaryBySection = new Map(
+    params.contextSectionSummaries.map((summary) => [summary.sectionKey, summary] as const)
+  );
+
+  const compactReviewModel = {
+    paperId: String(params.reviewModel.paperId || ''),
+    title: cleanReviewSummaryText(params.reviewModel.title, 220),
+    abstract: cleanReviewSummaryText(params.reviewModel.abstract, 1200),
+    keywords: normalizeReviewSummaryStringList(params.reviewModel.keywords, 12, 80),
+    articleType: cleanReviewSummaryText(params.reviewModel.articleType, 80),
+    targetVenue: cleanReviewSummaryText(params.reviewModel.targetVenue, 120),
+    citationStyleCode: cleanReviewSummaryText(params.reviewModel.citationStyleCode, 40),
+    targetWordCount: Number(params.reviewModel.targetWordCount || 0) || null,
+    currentWordCount: Number(params.reviewModel.currentWordCount || 0) || null,
+    researchContext: {
+      field: cleanReviewSummaryText(params.reviewModel.researchContext?.field, 120),
+      subfield: cleanReviewSummaryText(params.reviewModel.researchContext?.subfield, 120),
+      researchQuestion: cleanReviewSummaryText(params.reviewModel.researchContext?.researchQuestion, 260),
+      problemStatement: cleanReviewSummaryText(params.reviewModel.researchContext?.problemStatement, 320),
+      methodology: cleanReviewSummaryText(params.reviewModel.researchContext?.methodology, 220),
+      methodologyApproach: cleanReviewSummaryText(params.reviewModel.researchContext?.methodologyApproach, 220),
+      hypothesis: cleanReviewSummaryText(params.reviewModel.researchContext?.hypothesis, 220),
+      expectedResults: cleanReviewSummaryText(params.reviewModel.researchContext?.expectedResults, 220),
+      novelty: cleanReviewSummaryText(params.reviewModel.researchContext?.novelty, 220),
+      limitations: cleanReviewSummaryText(params.reviewModel.researchContext?.limitations, 220),
+    },
+    blueprint: params.reviewModel.blueprint ? {
+      thesisStatement: cleanReviewSummaryText(params.reviewModel.blueprint?.thesisStatement, 260),
+      centralObjective: cleanReviewSummaryText(params.reviewModel.blueprint?.centralObjective, 260),
+      keyContributions: normalizeReviewSummaryStringList(params.reviewModel.blueprint?.keyContributions, 8, 160),
+      sectionPlan: Array.isArray(params.reviewModel.blueprint?.sectionPlan)
+        ? params.reviewModel.blueprint.sectionPlan
+            .map((entry: any) => {
+              const record = asRecord(entry);
+              return {
+                sectionKey: cleanReviewSummaryText(record.sectionKey, 60),
+                sectionLabel: cleanReviewSummaryText(record.sectionLabel || record.label, 120),
+                objective: cleanReviewSummaryText(record.objective, 200)
+              };
+            })
+            .filter((entry: any) => entry.sectionKey)
+            .slice(0, 20)
+        : [],
+      narrativeArc: cleanReviewSummaryText(params.reviewModel.blueprint?.narrativeArc, 260),
+      methodologyType: cleanReviewSummaryText(params.reviewModel.blueprint?.methodologyType, 120),
+      version: Number(params.reviewModel.blueprint?.version || 1) || 1
+    } : null,
+    sections: Array.isArray(params.reviewModel.sections)
+      ? params.reviewModel.sections.map((section: any) => {
+          const summary = contextSummaryBySection.get(String(section.sectionKey || ''));
+          return {
+            sectionKey: String(section.sectionKey || ''),
+            sectionLabel: String(section.sectionLabel || section.heading || section.sectionKey || ''),
+            orderIndex: Number(section.orderIndex || 0),
+            wordCount: Number(section.wordCount || 0),
+            citedReferenceIds: normalizeReviewSummaryStringList(section.citedReferenceIds, 12, 80),
+            referencedFigureIds: normalizeReviewSummaryStringList(section.referencedFigureIds, 12, 80),
+            summary: summary ? {
+              sectionRole: cleanReviewSummaryText(summary.sectionRole, 80),
+              conciseSummary: cleanReviewSummaryText(summary.conciseSummary, 500),
+              mainClaims: normalizeReviewSummaryStringList(summary.mainClaims, 6, 180),
+              methodsOrApproach: normalizeReviewSummaryStringList(summary.methodsOrApproach, 5, 180),
+              keyResults: normalizeReviewSummaryStringList(summary.keyResults, 5, 180),
+              limitations: normalizeReviewSummaryStringList(summary.limitations, 4, 180),
+              promisesOrDependencies: normalizeReviewSummaryStringList(summary.promisesOrDependencies, 6, 180),
+              terminologyToKeep: normalizeReviewSummaryStringList(summary.terminologyToKeep, 8, 80),
+              riskFlags: normalizeReviewSummaryStringList(summary.riskFlags, 6, 120)
+            } : null
+          };
+        })
+      : [],
+    figures: Array.isArray(params.reviewModel.figures)
+      ? params.reviewModel.figures.map((figure: any) => ({
+          figureId: cleanReviewSummaryText(figure.figureId, 60),
+          figureLabel: cleanReviewSummaryText(figure.figureLabel, 40),
+          title: cleanReviewSummaryText(figure.title, 180),
+          caption: cleanReviewSummaryText(figure.caption, 260),
+          figureType: cleanReviewSummaryText(figure.figureType, 60),
+          insertionSectionId: cleanReviewSummaryText(figure.insertionSectionId, 60),
+          referencedBySectionIds: normalizeReviewSummaryStringList(figure.referencedBySectionIds, 12, 60),
+          sourceType: cleanReviewSummaryText(figure.sourceType, 60)
+        }))
+      : [],
+    references: Array.isArray(params.reviewModel.references)
+      ? params.reviewModel.references.map((reference: any) => ({
+          citationKey: cleanReviewSummaryText(reference.citationKey, 80),
+          title: cleanReviewSummaryText(reference.title, 180),
+          authors: normalizeReviewSummaryStringList(reference.authors, 4, 80),
+          year: Number(reference.year || 0) || null,
+          venue: cleanReviewSummaryText(reference.venue, 120),
+          sourceType: cleanReviewSummaryText(reference.sourceType, 60)
+        }))
+      : [],
+    citations: Array.isArray(params.reviewModel.citations)
+      ? params.reviewModel.citations.map((entry: any) => ({
+          sectionKey: cleanReviewSummaryText(entry.sectionKey, 60),
+          citationKeys: normalizeReviewSummaryStringList(entry.citationKeys, 16, 80)
+        }))
+      : [],
+    metadata: {
+      reviewMode: 'section_by_section',
+      contentMode: 'summary_only_aggregation_model'
+    }
+  };
+
+  const compactSectionReviewerOutputs = params.sectionReviewerOutputs.map((output) => ({
+    sectionSummary: {
+      sectionKey: String(output.sectionSummary?.sectionKey || ''),
+      sectionLabel: String(output.sectionSummary?.sectionLabel || ''),
+      score: Number(output.sectionSummary?.score || 0),
+      strengths: normalizeReviewSummaryStringList(output.sectionSummary?.strengths, 6, 180),
+      weaknesses: normalizeReviewSummaryStringList(output.sectionSummary?.weaknesses, 6, 180),
+      status: cleanReviewSummaryText(output.sectionSummary?.status, 40),
+      executiveSummary: cleanReviewSummaryText(output.sectionSummary?.executiveSummary, 360),
+      reviewerType: cleanReviewSummaryText(output.sectionSummary?.reviewerType, 80),
+      promptVariant: cleanReviewSummaryText(output.sectionSummary?.promptVariant, 80),
+      issueIds: normalizeReviewSummaryStringList(output.sectionSummary?.issueIds, 16, 80)
+    },
+    issues: Array.isArray(output.issues)
+      ? output.issues.map((issue: any) => ({
+          id: cleanReviewSummaryText(issue.id, 80),
+          reviewDimension: cleanReviewSummaryText(issue.reviewDimension, 80),
+          severity: cleanReviewSummaryText(issue.severity, 40),
+          confidence: Number(issue.confidence || 0),
+          sectionKey: cleanReviewSummaryText(issue.sectionKey, 60),
+          sectionLabel: cleanReviewSummaryText(issue.sectionLabel, 120),
+          relatedFigureIds: normalizeReviewSummaryStringList(issue.relatedFigureIds, 10, 60),
+          relatedSections: normalizeReviewSummaryStringList(issue.relatedSections, 10, 60),
+          title: cleanReviewSummaryText(issue.title, 140),
+          diagnosis: cleanReviewSummaryText(issue.diagnosis, 280),
+          evidenceExcerpt: cleanReviewSummaryText(issue.evidenceExcerpt, 220),
+          impactExplanation: cleanReviewSummaryText(issue.impactExplanation, 220),
+          recommendedAction: cleanReviewSummaryText(issue.recommendedAction, 220),
+          fixType: cleanReviewSummaryText(issue.fixType, 40),
+          reviewSourceModule: cleanReviewSummaryText(issue.reviewSourceModule, 80)
+        }))
+      : []
+  }));
+
   const template = await resolveRequiredPaperReviewTemplate(TEMPLATE_KEYS.PAPER_MANUSCRIPT_REVIEW_AGGREGATION);
   return interpolatePaperReviewPrompt(template, {
-    CANONICAL_PAPER_REVIEW_MODEL: JSON.stringify(params.reviewModel, null, 2),
-    SECTION_REVIEWER_OUTPUTS: JSON.stringify(params.sectionReviewerOutputs, null, 2)
+    CANONICAL_PAPER_REVIEW_MODEL: JSON.stringify(compactReviewModel, null, 2),
+    SECTION_REVIEWER_OUTPUTS: JSON.stringify(compactSectionReviewerOutputs, null, 2)
   });
 }
 
@@ -6306,6 +6446,7 @@ async function runSectionBySectionPaperReview(params: {
       stageCode: 'PAPER_MANUSCRIPT_REVIEW',
       prompt: await buildPaperReviewAggregationPrompt({
         reviewModel,
+        contextSectionSummaries: Array.from(contextSummaryBySection.values()),
         sectionReviewerOutputs
       }),
       parameters: {
