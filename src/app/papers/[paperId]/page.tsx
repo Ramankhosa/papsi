@@ -41,7 +41,7 @@ const STAGES = [
   { key: 'MANUSCRIPT_REVIEW', label: 'Review', description: 'Audit the drafted manuscript' },
   { key: 'MANUSCRIPT_IMPROVE', label: 'Improve', description: 'Apply review recommendations with diff preview' },
   { key: 'HUMANIZATION', label: 'Humanization', description: 'Humanize sections and validate citations' },
-  { key: 'REVIEW_EXPORT', label: 'Review & Export', description: 'Validate and export' }
+  { key: 'REVIEW_EXPORT', label: 'Adaptive Export', description: 'Extract formatting and export' }
 ] as const
 
 type StageKey = typeof STAGES[number]['key']

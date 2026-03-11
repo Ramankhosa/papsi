@@ -685,12 +685,12 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
     subStages: [],
     getSubStages: getHumanizationSubStages
   },
-  // Stage 9: Review & Export (REVIEW_EXPORT) - Finalize and export
+  // Stage 9: Adaptive Export (REVIEW_EXPORT) - Finalize and export
   {
     key: 'REVIEW_EXPORT',
-    label: 'Review & Export',
+    label: 'Adaptive Export',
     icon: CheckCircle,
-    description: 'Validate and export',
+    description: 'Extract formatting, validate, and export',
     weight: 15,
     subStages: [
       {
@@ -729,7 +729,7 @@ export const STAGE_ORDER = [
   'MANUSCRIPT_REVIEW', // Review - audit manuscript quality and readiness
   'MANUSCRIPT_IMPROVE', // Improve - execute review recommendations
   'HUMANIZATION',      // Humanization - preserve draft and humanized versions
-  'REVIEW_EXPORT'      // Review & Export - finalize and export
+  'REVIEW_EXPORT'      // Adaptive Export - finalize and export
 ]
 
 // ============================================================================

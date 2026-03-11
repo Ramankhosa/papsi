@@ -1777,6 +1777,7 @@ model DraftingSession {
   userDiagramStyles       UserDiagramStyle[]
   userExportStyles        UserExportStyle[]
   userValidationOverrides UserValidationOverride[]
+  exportProfile           ExportProfile?
 
   // AI Review results
   aiReviews AIReviewResult[]
@@ -4073,6 +4074,38 @@ model PaperSectionHumanization {
   @@index([sessionId, status])
   @@index([draftId])
   @@map("paper_section_humanizations")
+}
+
+model ExportProfile {
+  id        String  @id @default(cuid())
+  sessionId String
+  userId    String
+  name      String?
+
+  llmExtracted  Json
+  userOverrides Json @default("{}")
+
+  sourceType     String  @default("file")
+  sourceFileName String?
+  sourceMimeType String?
+  sourceFileHash String?
+
+  extractionModel     String?
+  extractionTokensIn  Int?
+  extractionTokensOut Int?
+  confidence          Float   @default(0)
+
+  isReusable Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId])
+  @@index([userId])
+  @@index([sourceFileHash])
+  @@map("export_profiles")
 }
 
 model PaperSectionCitationValidation {

@@ -124,7 +124,9 @@ const VISIBLE_STAGE_CODES_BY_FEATURE: Partial<Record<string, Set<string>>> = {
     'PAPER_REVIEW_GAPS',
     'PAPER_REVIEW_COHERENCE',
     'PAPER_MANUSCRIPT_REVIEW',
+    'PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY',
     'PAPER_MANUSCRIPT_IMPROVE',
+    'PAPER_EXPORT_EXTRACTION',
   ])
 }
 
@@ -433,10 +435,20 @@ const STAGE_CONTROL_HELP: Record<string, StageHelpInfo> = {
     responsibility: 'Runs the post-drafting review stage and produces the persisted review report used by the Improve stage.',
     tip: 'Prefer high-reasoning, long-context models because the full manuscript, citations, and figure context may be inspected together.'
   },
+  PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY: {
+    summary: 'Neighbor-section context summarization.',
+    responsibility: 'Extracts compact structured summaries of nearby sections so section-by-section review can keep full text only for the active section.',
+    tip: 'Structured-output reliability matters most; keep this aligned to the summary prompt and current review strategy.'
+  },
   PAPER_MANUSCRIPT_IMPROVE: {
     summary: 'Review-driven manuscript improvement.',
     responsibility: 'Executes approved rewrite-fixable recommendations from the latest manuscript review and updates draft sections.',
     tip: 'Use models with strong edit fidelity and instruction-following to avoid collateral rewrites.'
+  },
+  PAPER_EXPORT_EXTRACTION: {
+    summary: 'Adaptive export profile extraction.',
+    responsibility: 'Reads an uploaded DOCX or LaTeX reference, or pasted formatting guidelines, and converts them into the structured export profile used by DOCX and LaTeX exporters.',
+    tip: 'Prioritize structured JSON reliability and formatting inference quality over creative output.'
   },
   PAPER_ARCHETYPE_DETECTION: {
     summary: 'Reference archetype detection.',
@@ -483,7 +495,7 @@ function getStageCodeBadgeClasses(stageCode: string): string {
   if (/SECTION|CONTENT|MEMORY|TEXT_ACTION|REWRITER|CITATION_FORMAT/.test(stageCode)) {
     return 'border-cyan-700/50 bg-cyan-900/25 text-cyan-200'
   }
-  if (/REVIEW|FIX|IMPROVE/.test(stageCode)) {
+  if (/REVIEW|FIX|IMPROVE|EXPORT/.test(stageCode)) {
     return 'border-rose-700/50 bg-rose-900/25 text-rose-200'
   }
   return 'border-slate-600 bg-slate-700/60 text-slate-200'

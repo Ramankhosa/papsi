@@ -3712,7 +3712,7 @@ type GenerationStatusEmitter = (phase: string, message: string) => Promise<void>
 
 type PaperReviewProgressEmitter = (payload: {
   reviewMode: 'quick' | 'section_by_section';
-  phase: 'prepare' | 'review' | 'section_review' | 'aggregate' | 'persist' | 'complete';
+  phase: 'prepare' | 'review' | 'summarize_context' | 'section_review' | 'aggregate' | 'persist' | 'complete';
   message: string;
   totalSections?: number;
   completedSections?: number;
@@ -5608,6 +5608,197 @@ function getPaperSectionReviewerProfile(sectionKey: string): {
   }
 }
 
+type PaperContextSectionSummary = {
+  sectionKey: string;
+  sectionLabel: string;
+  orderIndex: number;
+  wordCount: number;
+  contentFingerprint: string;
+  contextType: 'neighbor_section_summary';
+  contentMode: 'summary_only';
+  reviewerType: string;
+  promptVariant: string;
+  sectionRole: string;
+  conciseSummary: string;
+  mainClaims: string[];
+  methodsOrApproach: string[];
+  keyResults: string[];
+  limitations: string[];
+  promisesOrDependencies: string[];
+  citedReferenceKeys: string[];
+  figureReferences: string[];
+  terminologyToKeep: string[];
+  riskFlags: string[];
+};
+
+function cleanReviewSummaryText(value: unknown, maxLength: number = 240): string {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+  const safeLimit = Math.max(maxLength - 3, 1);
+  return `${text.slice(0, safeLimit).trim()}...`;
+}
+
+function normalizeReviewSummaryStringList(value: unknown, maxItems: number = 6, maxLength: number = 180): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const entry of value) {
+    const text = cleanReviewSummaryText(entry, maxLength);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(text);
+    if (normalized.length >= maxItems) break;
+  }
+
+  return normalized;
+}
+
+function buildFallbackPaperContextSectionSummary(section: Record<string, any>): PaperContextSectionSummary {
+  const sectionKey = String(section.sectionKey || '');
+  const sectionLabel = String(section.sectionLabel || section.heading || sectionKey);
+  const profile = getPaperSectionReviewerProfile(sectionKey);
+  const bodyText = String(section.bodyText || '');
+  const clipped = truncateContentToWordLimit(bodyText, 110);
+
+  return {
+    sectionKey,
+    sectionLabel,
+    orderIndex: Number(section.orderIndex || 0),
+    wordCount: Number(section.wordCount || computeWordCount(bodyText)),
+    contentFingerprint: computeContentFingerprint(bodyText),
+    contextType: 'neighbor_section_summary',
+    contentMode: 'summary_only',
+    reviewerType: profile.reviewerType,
+    promptVariant: profile.promptVariant,
+    sectionRole: cleanReviewSummaryText(sectionLabel, 80) || 'body section',
+    conciseSummary: clipped.content || `Context summary unavailable for ${sectionLabel}.`,
+    mainClaims: [],
+    methodsOrApproach: [],
+    keyResults: [],
+    limitations: [],
+    promisesOrDependencies: [],
+    citedReferenceKeys: normalizeReviewSummaryStringList(section.citedReferenceIds, 10, 80),
+    figureReferences: normalizeReviewSummaryStringList(section.referencedFigureIds, 10, 80),
+    terminologyToKeep: [],
+    riskFlags: clipped.trimmed ? ['fallback_summary_used'] : [],
+  };
+}
+
+function normalizePaperContextSectionSummary(
+  section: Record<string, any>,
+  parsed: unknown
+): PaperContextSectionSummary {
+  const base = buildFallbackPaperContextSectionSummary(section);
+  const raw = asRecord(parsed);
+  const conciseSummary = cleanReviewSummaryText(raw.conciseSummary, 900) || base.conciseSummary;
+  const citedReferenceKeys = normalizeReviewSummaryStringList(raw.citedReferenceKeys, 10, 80);
+  const figureReferences = normalizeReviewSummaryStringList(raw.figureReferences, 10, 80);
+
+  return {
+    ...base,
+    sectionRole: cleanReviewSummaryText(raw.sectionRole, 80) || base.sectionRole,
+    conciseSummary,
+    mainClaims: normalizeReviewSummaryStringList(raw.mainClaims, 6, 180),
+    methodsOrApproach: normalizeReviewSummaryStringList(raw.methodsOrApproach, 5, 180),
+    keyResults: normalizeReviewSummaryStringList(raw.keyResults, 5, 180),
+    limitations: normalizeReviewSummaryStringList(raw.limitations, 4, 180),
+    promisesOrDependencies: normalizeReviewSummaryStringList(raw.promisesOrDependencies, 6, 180),
+    citedReferenceKeys: citedReferenceKeys.length > 0 ? citedReferenceKeys : base.citedReferenceKeys,
+    figureReferences: figureReferences.length > 0 ? figureReferences : base.figureReferences,
+    terminologyToKeep: normalizeReviewSummaryStringList(raw.terminologyToKeep, 8, 80),
+    riskFlags: normalizeReviewSummaryStringList(raw.riskFlags, 6, 120),
+  };
+}
+
+async function buildPaperSectionContextSummaryPrompt(params: {
+  reviewModel: Record<string, any>;
+  section: Record<string, any>;
+}): Promise<string> {
+  const { reviewModel, section } = params;
+  const sectionKey = String(section.sectionKey || '');
+  const normalizedSectionKey = normalizeSectionKey(sectionKey) || '*';
+  const profile = getPaperSectionReviewerProfile(sectionKey);
+  const fallbackTemplate = `
+You are extracting a compact structured context brief for a neighboring manuscript section.
+The brief will be shown to another reviewer as context only.
+
+Keep only details that affect:
+- cross-section coherence
+- claim and evidence alignment
+- method, result, and conclusion consistency
+- citation and figure grounding
+- promises this section makes to other sections
+
+Ignore rhetorical filler, repeated transitions, hedging, and prose polish notes.
+
+Return ONLY one JSON object with exactly these keys:
+{
+  "sectionRole": string,
+  "conciseSummary": string,
+  "mainClaims": string[],
+  "methodsOrApproach": string[],
+  "keyResults": string[],
+  "limitations": string[],
+  "promisesOrDependencies": string[],
+  "citedReferenceKeys": string[],
+  "figureReferences": string[],
+  "terminologyToKeep": string[],
+  "riskFlags": string[]
+}
+
+Rules:
+- conciseSummary must stay under 120 words.
+- Keep list items short and concrete.
+- Use [] when information is absent.
+- Do not critique or rewrite the section.
+- Do not include markdown fences or explanation text.
+
+PAPER_OVERVIEW:
+{{PAPER_OVERVIEW}}
+
+SECTION_METADATA:
+{{SECTION_METADATA}}
+
+SECTION_REVIEWER_PROFILE:
+{{SECTION_REVIEWER_PROFILE}}
+
+SECTION_CONTENT:
+{{SECTION_CONTENT}}`.trim();
+
+  const template = await systemPromptTemplateService.resolveWithFallback(
+    {
+      templateKey: TEMPLATE_KEYS.PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY,
+      applicationMode: 'paper',
+      sectionScope: normalizedSectionKey
+    },
+    fallbackTemplate
+  );
+
+  return interpolatePaperReviewPrompt(template, {
+    PAPER_OVERVIEW: JSON.stringify({
+      paperId: reviewModel.paperId,
+      title: reviewModel.title,
+      abstract: reviewModel.abstract,
+      articleType: reviewModel.articleType,
+      targetVenue: reviewModel.targetVenue,
+    }, null, 2),
+    SECTION_METADATA: JSON.stringify({
+      sectionKey,
+      sectionLabel: section.sectionLabel,
+      orderIndex: section.orderIndex,
+      wordCount: section.wordCount,
+      citedReferenceIds: section.citedReferenceIds,
+      referencedFigureIds: section.referencedFigureIds,
+    }, null, 2),
+    SECTION_REVIEWER_PROFILE: JSON.stringify(profile, null, 2),
+    SECTION_CONTENT: String(section.bodyText || '[Section currently empty]')
+  });
+}
+
 async function buildDetailedSectionReviewPrompt(params: {
   reviewModel: Record<string, any>;
   section: Record<string, any>;
@@ -5631,6 +5822,8 @@ async function buildDetailedSectionReviewPrompt(params: {
       articleType: params.reviewModel.articleType,
       targetVenue: params.reviewModel.targetVenue,
       blueprint: params.reviewModel.blueprint,
+      targetSectionContentMode: 'full_text',
+      contextSectionContentMode: 'summary_only',
     }, null, 2),
     TARGET_SECTION: JSON.stringify(params.section, null, 2),
     CONTEXT_SECTIONS: JSON.stringify(params.contextSections, null, 2),
@@ -5692,14 +5885,90 @@ async function runSectionBySectionPaperReview(params: {
   const sections = Array.isArray(reviewModel.sections) ? reviewModel.sections : [];
   const references = Array.isArray(reviewModel.references) ? reviewModel.references : [];
   const figures = Array.isArray(reviewModel.figures) ? reviewModel.figures : [];
+  let completedContextSummaries = 0;
   let completedSections = 0;
 
   await emitProgress?.({
     reviewMode: 'section_by_section',
-    phase: 'section_review',
+    phase: 'summarize_context',
     message: sections.length > 0
-      ? `Running section reviewers (0/${sections.length} complete)`
+      ? `Extracting reusable context briefs (0/${sections.length} complete)`
       : 'No drafted sections available for section-by-section review',
+    totalSections: sections.length,
+    completedSections: 0,
+  });
+
+  const contextSummaryResults = await Promise.all(
+    sections.map(async (section: Record<string, any>, sectionIndex: number) => {
+      const sectionKey = String(section.sectionKey || '');
+      const sectionLabel = String(section.sectionLabel || section.heading || sectionKey);
+      let summary = buildFallbackPaperContextSectionSummary(section);
+      let tokensUsed = 0;
+
+      try {
+        const result = await llmGateway.executeLLMOperation(
+          { headers: requestHeaders },
+          {
+            taskCode: 'LLM2_DRAFT' as const,
+            stageCode: 'PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY',
+            prompt: await buildPaperSectionContextSummaryPrompt({
+              reviewModel,
+              section
+            }),
+            parameters: {
+              temperature: 0.05,
+              tenantId: tenantContext?.tenantId
+            },
+            idempotencyKey: crypto.randomUUID(),
+            metadata: {
+              sessionId,
+              paperId: sessionId,
+              action: 'run_section_context_summary',
+              module: 'paper_review',
+              purpose: 'paper_section_context_summary',
+              sectionKey,
+              sectionIndex
+            }
+          }
+        );
+
+        if (result.success && result.response) {
+          tokensUsed = Number(result.response.outputTokens || 0);
+          const parsed = extractJsonObjectFromModelOutput(result.response.output || '');
+          summary = normalizePaperContextSectionSummary(section, parsed);
+        } else {
+          console.warn(`[PaperReview] Falling back to heuristic context summary for ${sectionKey}: ${result.error?.message || 'summary extraction failed'}`);
+        }
+      } catch (error) {
+        console.warn(`[PaperReview] Falling back to heuristic context summary for ${sectionKey}:`, error);
+      }
+
+      completedContextSummaries += 1;
+      await emitProgress?.({
+        reviewMode: 'section_by_section',
+        phase: 'summarize_context',
+        message: `Prepared context brief for ${sectionLabel} (${completedContextSummaries}/${sections.length})`,
+        totalSections: sections.length,
+        completedSections: completedContextSummaries,
+        sectionKey,
+        sectionLabel,
+      });
+
+      return {
+        summary,
+        tokensUsed
+      };
+    })
+  );
+
+  const contextSummaryBySection = new Map(
+    contextSummaryResults.map((entry) => [entry.summary.sectionKey, entry.summary] as const)
+  );
+
+  await emitProgress?.({
+    reviewMode: 'section_by_section',
+    phase: 'section_review',
+    message: `Running section reviewers (0/${sections.length} complete)`,
     totalSections: sections.length,
     completedSections: 0,
   });
@@ -5724,6 +5993,9 @@ async function runSectionBySectionPaperReview(params: {
             || Math.abs(Number(candidate.orderIndex || 0) - Number(section.orderIndex || 0)) === 1;
         })
         .slice(0, 4);
+      const contextSectionSummaries = contextSections
+        .map((candidate: Record<string, any>) => contextSummaryBySection.get(String(candidate.sectionKey || '')))
+        .filter((candidate): candidate is PaperContextSectionSummary => Boolean(candidate));
 
       const result = await llmGateway.executeLLMOperation(
         { headers: requestHeaders },
@@ -5733,7 +6005,7 @@ async function runSectionBySectionPaperReview(params: {
           prompt: await buildDetailedSectionReviewPrompt({
             reviewModel,
             section,
-            contextSections,
+            contextSections: contextSectionSummaries,
             relevantFigures,
             relevantCitations
           }),
@@ -5861,9 +6133,10 @@ async function runSectionBySectionPaperReview(params: {
     reviewLabel: getPaperReviewModeLabel('section_by_section'),
     sectionSummaries,
     sectionReviewTraces,
-    generatedAt: reviewedAt
+      generatedAt: reviewedAt
   }, allIssues);
-  const tokensUsed = sectionReviewerOutputs.reduce((sum, output) => sum + Number(output.tokensUsed || 0), 0)
+  const tokensUsed = contextSummaryResults.reduce((sum, output) => sum + Number(output.tokensUsed || 0), 0)
+    + sectionReviewerOutputs.reduce((sum, output) => sum + Number(output.tokensUsed || 0), 0)
     + Number(aggregationResult.response.outputTokens || 0);
 
   return {

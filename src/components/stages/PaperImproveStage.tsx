@@ -326,7 +326,7 @@ export default function PaperImproveStage({
               <div className="text-sm font-semibold text-slate-900">All issues in this review are addressed</div>
               <p className="mt-1 text-sm leading-6 text-slate-600">The saved review queue is clear. Continue to Export for the final structural and citation checks.</p>
             </div>
-            <button type="button" onClick={() => onNavigateToStage?.('REVIEW_EXPORT')} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">Proceed To Export<ArrowRight className="h-4 w-4" /></button>
+            <button type="button" onClick={() => onNavigateToStage?.('REVIEW_EXPORT')} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">Proceed To Adaptive Export<ArrowRight className="h-4 w-4" /></button>
           </div>
         </div>
       )}

@@ -689,9 +689,9 @@ const STAGE_DEFINITIONS: StageDefinition[] = [
   },
   {
     key: 'REVIEW_EXPORT',
-    label: 'Review & Export',
+    label: 'Adaptive Export',
     icon: CheckCircle,
-    description: 'Validate and export',
+    description: 'Extract formatting, validate, and export',
     weight: 15,
     subStages: [
       {

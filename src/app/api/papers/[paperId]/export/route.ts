@@ -1,23 +1,32 @@
+import fs from 'fs/promises';
+import path from 'path';
+
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+
 import { authenticateUser } from '@/lib/auth-middleware';
 import { DraftingService } from '@/lib/drafting-service';
+import { exportCitationsToBibtex } from '@/lib/export/bibtex-export';
+import { parseVenueExportProfile, resolveExportConfigWithSources } from '@/lib/export/export-config-resolver';
+import { buildLatexExport, type LatexFormatting } from '@/lib/export/latex-export';
+import { buildPaperDocxBuffer, type PaperDocxFormatting } from '@/lib/export/paper-docx-export';
+import type { ExportProfile } from '@/lib/export/export-profile-schema';
+import { getPaperFigureImageCandidates } from '@/lib/figure-generation/paper-figure-image';
+import { prisma } from '@/lib/prisma';
 import { citationService } from '@/lib/services/citation-service';
 import { citationStyleService, type CitationData } from '@/lib/services/citation-style-service';
-import { buildPaperDocxBuffer } from '@/lib/export/paper-docx-export';
-import { buildLatexExport } from '@/lib/export/latex-export';
-import { exportCitationsToBibtex } from '@/lib/export/bibtex-export';
 import {
   buildCitationKeyLookup,
   citationKeyIdentity,
   resolveCitationKeyFromLookup,
-  splitCitationKeyList
+  splitCitationKeyList,
 } from '@/lib/utils/citation-key-normalization';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const SUPPORTED_FORMATS = new Set(['docx', 'bibtex', 'latex']);
+const NUMERIC_ORDER_STYLES = new Set(['IEEE', 'VANCOUVER']);
+const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   const where = user.roles?.includes('SUPER_ADMIN')
@@ -29,10 +38,16 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
     include: {
       paperType: true,
       citationStyle: true,
-      publicationVenue: true,
+      publicationVenue: {
+        include: {
+          citationStyle: true,
+        },
+      },
       researchTopic: true,
-      figurePlans: true
-    }
+      figurePlans: true,
+      exportProfile: true,
+      paperSectionHumanizations: true,
+    },
   });
 }
 
@@ -40,13 +55,13 @@ async function getPaperDraft(sessionId: string) {
   return prisma.annexureDraft.findFirst({
     where: {
       sessionId,
-      jurisdiction: 'PAPER'
+      jurisdiction: 'PAPER',
     },
-    orderBy: { version: 'desc' }
+    orderBy: { version: 'desc' },
   });
 }
 
-function normalizeExtraSections(value: any): Record<string, string> {
+function normalizeExtraSections(value: unknown): Record<string, string> {
   if (!value) return {};
   if (typeof value === 'string') {
     try {
@@ -59,26 +74,58 @@ function normalizeExtraSections(value: any): Record<string, string> {
   return {};
 }
 
-function getStyleCode(session: any): string {
+function getFallbackStyleCode(session: Awaited<ReturnType<typeof getSessionForUser>>): string {
   return session?.citationStyle?.code
+    || session?.publicationVenue?.citationStyle?.code
     || process.env.DEFAULT_CITATION_STYLE
     || 'APA7';
 }
 
-const NUMERIC_ORDER_STYLES = new Set(['IEEE', 'VANCOUVER']);
-const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
+function titleize(value: string): string {
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
 
-function splitCitationKeys(rawKeys: string): string[] {
-  return splitCitationKeyList(rawKeys);
+function stripHtml(value: string): string {
+  let text = value;
+  text = text.replace(/<\s*br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/p>/gi, '\n\n');
+  text = text.replace(/<[^>]+>/g, '');
+  text = text.replace(/&nbsp;/gi, ' ');
+  text = text.replace(/&amp;/gi, '&');
+  text = text.replace(/&lt;/gi, '<');
+  text = text.replace(/&gt;/gi, '>');
+  text = text.replace(/&quot;/gi, '"');
+  text = text.replace(/&#39;/gi, '\'');
+  return text.trim();
+}
+
+function normalizeSectionKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function computeContentFingerprint(content: string): string {
+  const normalized = String(content || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  let hash = 0;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = ((hash << 5) - hash + normalized.charCodeAt(index)) | 0;
+  }
+
+  return `${(hash >>> 0).toString(16)}_${normalized.length}`;
 }
 
 function buildCanonicalCitationLookup(citations: Array<{ citationKey: string }>): Map<string, string> {
-  return buildCitationKeyLookup(citations.map(citation => citation.citationKey));
+  return buildCitationKeyLookup(citations.map((citation) => citation.citationKey));
 }
 
 function extractOrderedCitationKeysFromSections(
   sections: Array<{ key: string; content: string }>,
-  canonicalLookup: Map<string, string>
+  canonicalLookup: Map<string, string>,
 ): string[] {
   const ordered: string[] = [];
   const seen = new Set<string>();
@@ -90,7 +137,7 @@ function extractOrderedCitationKeysFromSections(
     CITE_MARKER_REGEX.lastIndex = 0;
     let match: RegExpExecArray | null = null;
     while ((match = CITE_MARKER_REGEX.exec(content)) !== null) {
-      const keys = splitCitationKeys(match[1] || '');
+      const keys = splitCitationKeyList(match[1] || '');
       for (const key of keys) {
         const canonical = resolveCitationKeyFromLookup(key, canonicalLookup);
         if (!canonical || seen.has(canonical)) continue;
@@ -120,106 +167,22 @@ function mergeCitationOrder(primaryOrder: string[], fallbackOrder: string[]): st
 
 function sortCitationsByOrderedKeys<T extends { citationKey: string }>(
   citations: T[],
-  orderedCitationKeys: string[]
+  orderedCitationKeys: string[],
 ): T[] {
   const orderLookup = new Map<string, number>();
   orderedCitationKeys.forEach((key, index) => orderLookup.set(key, index));
-  return [...citations].sort((a, b) => {
-    const left = orderLookup.get(a.citationKey);
-    const right = orderLookup.get(b.citationKey);
-    const leftRank = typeof left === 'number' ? left : Number.MAX_SAFE_INTEGER;
-    const rightRank = typeof right === 'number' ? right : Number.MAX_SAFE_INTEGER;
-    if (leftRank !== rightRank) return leftRank - rightRank;
-    return a.citationKey.localeCompare(b.citationKey);
+  return [...citations].sort((left, right) => {
+    const leftRank = orderLookup.get(left.citationKey);
+    const rightRank = orderLookup.get(right.citationKey);
+    const leftValue = typeof leftRank === 'number' ? leftRank : Number.MAX_SAFE_INTEGER;
+    const rightValue = typeof rightRank === 'number' ? rightRank : Number.MAX_SAFE_INTEGER;
+    if (leftValue !== rightValue) return leftValue - rightValue;
+    return left.citationKey.localeCompare(right.citationKey);
   });
 }
 
 function buildCitationNumberingMap(orderedCitationKeys: string[]): Record<string, number> {
-  return Object.fromEntries(
-    orderedCitationKeys.map((citationKey, index) => [citationKey, index + 1])
-  );
-}
-
-function titleize(value: string): string {
-  return value
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, char => char.toUpperCase());
-}
-
-function stripHtml(value: string): string {
-  let text = value;
-  text = text.replace(/<\s*br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/p>/gi, '\n\n');
-  text = text.replace(/<[^>]+>/g, '');
-  text = text.replace(/&nbsp;/gi, ' ');
-  text = text.replace(/&amp;/gi, '&');
-  text = text.replace(/&lt;/gi, '<');
-  text = text.replace(/&gt;/gi, '>');
-  text = text.replace(/&quot;/gi, '"');
-  text = text.replace(/&#39;/gi, "'");
-  return text.trim();
-}
-
-function parseFormattingGuidelines(venue: any) {
-  const guidelines = venue?.formattingGuidelines || {};
-  const fontFamily = guidelines.fontFamily || guidelines.font || 'Times New Roman';
-  const fontSizePt = Number(guidelines.fontSizePt || guidelines.fontSize || 12);
-  const lineSpacing = Number(guidelines.lineSpacing || 1.5);
-  const marginsCm = parseMargins(guidelines.margins);
-  const rawPageSize = typeof guidelines.pageSize === 'string' ? guidelines.pageSize.toUpperCase() : 'A4';
-  const pageSize: 'A4' | 'LETTER' = rawPageSize === 'LETTER' ? 'LETTER' : 'A4';
-
-  return {
-    fontFamily,
-    fontSizePt: Number.isFinite(fontSizePt) ? fontSizePt : 12,
-    lineSpacing: Number.isFinite(lineSpacing) ? lineSpacing : 1.5,
-    marginsCm,
-    pageSize
-  };
-}
-
-function parseMargins(value: any): { top: number; bottom: number; left: number; right: number } {
-  const fallback = { top: 2.54, bottom: 2.54, left: 2.54, right: 2.54 };
-
-  if (!value) return fallback;
-
-  if (typeof value === 'string') {
-    const match = value.trim().match(/([\d.]+)\s*(cm|in|inch|inches)?/i);
-    if (!match) return fallback;
-    const amount = Number(match[1]);
-    if (!Number.isFinite(amount)) return fallback;
-    const unit = (match[2] || 'in').toLowerCase();
-    const cm = unit.startsWith('cm') ? amount : amount * 2.54;
-    return { top: cm, bottom: cm, left: cm, right: cm };
-  }
-
-  if (typeof value === 'number') {
-    const cm = value * 2.54;
-    return { top: cm, bottom: cm, left: cm, right: cm };
-  }
-
-  if (typeof value === 'object') {
-    const top = Number(value.top ?? value.vertical ?? value.all ?? fallback.top);
-    const bottom = Number(value.bottom ?? value.vertical ?? value.all ?? fallback.bottom);
-    const left = Number(value.left ?? value.horizontal ?? value.all ?? fallback.left);
-    const right = Number(value.right ?? value.horizontal ?? value.all ?? fallback.right);
-    return {
-      top: Number.isFinite(top) ? top : fallback.top,
-      bottom: Number.isFinite(bottom) ? bottom : fallback.bottom,
-      left: Number.isFinite(left) ? left : fallback.left,
-      right: Number.isFinite(right) ? right : fallback.right
-    };
-  }
-
-  return fallback;
-}
-
-function resolveBibliographyStyle(styleCode: string): string {
-  const code = styleCode.toUpperCase();
-  if (code.startsWith('IEEE')) return 'IEEEtran';
-  if (code.startsWith('APA')) return 'apalike';
-  if (code.startsWith('CHICAGO')) return 'chicago';
-  return 'plain';
+  return Object.fromEntries(orderedCitationKeys.map((citationKey, index) => [citationKey, index + 1]));
 }
 
 function toCitationData(citation: any): CitationData {
@@ -248,7 +211,129 @@ function toCitationData(citation: any): CitationData {
     pmid: citation.pmid || undefined,
     pmcid: citation.pmcid || undefined,
     arxivId: citation.arxivId || undefined,
-    citationKey: citation.citationKey
+    citationKey: citation.citationKey,
+  };
+}
+
+function selectOrderedSectionKeys(
+  extraSections: Record<string, string>,
+  sectionOrder: string[],
+): string[] {
+  if (sectionOrder.length === 0) return Object.keys(extraSections);
+
+  const remaining = Object.keys(extraSections).filter((key) => !sectionOrder.includes(key));
+  return [...sectionOrder, ...remaining];
+}
+
+function buildHumanizedMap(rows: any[]): Record<string, any> {
+  const map: Record<string, any> = {};
+  for (const row of rows || []) {
+    const key = normalizeSectionKey(String(row?.sectionKey || ''));
+    if (!key) continue;
+    map[key] = row;
+  }
+  return map;
+}
+
+function pickSectionContent(rawContent: string, humanizedRecord: any): string {
+  const draftContent = String(rawContent || '');
+  const humanizedContent = typeof humanizedRecord?.humanizedContent === 'string'
+    ? humanizedRecord.humanizedContent
+    : '';
+
+  if (!humanizedContent.trim()) {
+    return draftContent;
+  }
+
+  const sourceDraftFingerprint = typeof humanizedRecord?.sourceDraftFingerprint === 'string'
+    ? humanizedRecord.sourceDraftFingerprint
+    : '';
+
+  if (sourceDraftFingerprint && sourceDraftFingerprint !== computeContentFingerprint(draftContent)) {
+    return draftContent;
+  }
+
+  return humanizedContent;
+}
+
+async function resolveStyleCode(
+  requestedStyleCode: string,
+  fallbackStyleCode: string,
+): Promise<string> {
+  const preferred = String(requestedStyleCode || '').trim() || fallbackStyleCode;
+  const style = await citationStyleService.getCitationStyle(preferred);
+  if (style?.code) return style.code;
+  return fallbackStyleCode;
+}
+
+async function readFigureAsset(rawImagePath: string, figureNo: number): Promise<{
+  fileName: string;
+  zipPath: string;
+  buffer: Buffer;
+} | null> {
+  const candidates = getPaperFigureImageCandidates(rawImagePath);
+  for (const candidate of candidates) {
+    try {
+      const buffer = await fs.readFile(candidate);
+      const ext = path.extname(candidate) || '.png';
+      const fileName = `figure-${String(figureNo).padStart(2, '0')}${ext.toLowerCase()}`;
+      return {
+        fileName,
+        zipPath: `images/${fileName}`,
+        buffer,
+      };
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        console.warn(`[PaperExport] Failed to read figure asset ${candidate}:`, error?.message || error);
+      }
+    }
+  }
+  return null;
+}
+
+function loadZip(): any {
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  const req = eval('require') as (name: string) => any;
+  return req('adm-zip');
+}
+
+function exportProfileToDocxFormatting(config: ExportProfile): PaperDocxFormatting {
+  return {
+    fontFamily: config.fontFamily,
+    fontSizePt: config.fontSizePt,
+    lineSpacing: config.lineSpacing,
+    marginsCm: {
+      top: config.margins.topCm,
+      bottom: config.margins.bottomCm,
+      left: config.margins.leftCm,
+      right: config.margins.rightCm,
+    },
+    pageSize: config.pageSize,
+    columnLayout: config.columnLayout,
+    includePageNumbers: config.includePageNumbers,
+    pageNumberPosition: config.pageNumberPosition,
+    headerContent: config.headerContent,
+    footerContent: config.footerContent,
+    sectionNumbering: config.sectionNumbering,
+  };
+}
+
+function exportProfileToLatexFormatting(config: ExportProfile): LatexFormatting {
+  return {
+    documentClass: config.documentClass,
+    documentClassOptions: config.documentClassOptions,
+    columnLayout: config.columnLayout,
+    latexPackages: config.latexPackages,
+    latexPreambleExtra: config.latexPreambleExtra,
+    bibliographyStyle: config.bibliographyStyle,
+    citationCommand: config.citationCommand,
+    includePageNumbers: config.includePageNumbers,
+    margins: config.margins,
+    lineSpacing: config.lineSpacing,
+    fontSizePt: config.fontSizePt,
+    pageSize: config.pageSize,
+    fontFamily: config.fontFamily,
+    sectionNumbering: config.sectionNumbering,
   };
 }
 
@@ -276,150 +361,182 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
     }
 
     const extraSections = normalizeExtraSections(draft.extraSections);
-    const styleCode = getStyleCode(session);
-    const sectionOrder = Array.isArray(session.paperType?.sectionOrder) ? (session.paperType.sectionOrder as string[]) : [];
-    const orderedKeys: string[] = sectionOrder.length > 0
-      ? [...sectionOrder, ...Object.keys(extraSections).filter(key => !sectionOrder.includes(key))]
-      : Object.keys(extraSections);
+    const sectionOrder = Array.isArray(session.paperType?.sectionOrder)
+      ? (session.paperType.sectionOrder as string[])
+      : [];
+    const orderedKeys = selectOrderedSectionKeys(extraSections, sectionOrder);
+    const humanizedMap = buildHumanizedMap(session.paperSectionHumanizations || []);
 
-    const sections = orderedKeys
-      .filter(key => {
-        if (!key || typeof key !== 'string') return false;
-        const normalized = key.toLowerCase();
+    const exportProfileResolution = resolveExportConfigWithSources(
+      session.exportProfile?.llmExtracted as any,
+      session.exportProfile?.userOverrides as any,
+      parseVenueExportProfile(session.publicationVenue),
+    );
+    const exportConfig = exportProfileResolution.config;
+    const docxFormatting = exportProfileToDocxFormatting(exportConfig);
+    const latexFormatting = exportProfileToLatexFormatting(exportConfig);
+    const fallbackStyleCode = getFallbackStyleCode(session);
+    const styleCode = await resolveStyleCode(exportConfig.citationStyle, fallbackStyleCode);
+
+    const rawSections = orderedKeys
+      .filter((key) => {
+        const normalized = normalizeSectionKey(String(key || ''));
         return normalized !== 'title' && normalized !== 'references' && normalized !== 'bibliography';
       })
-      .map(key => ({ key: key as string, raw: extraSections[key as string] || '' }))
-      .filter(section => section.raw && section.raw.trim().length > 0);
+      .map((key) => {
+        const normalizedKey = normalizeSectionKey(key);
+        const selectedContent = pickSectionContent(extraSections[key] || '', humanizedMap[normalizedKey]);
+        return {
+          key,
+          title: titleize(key),
+          content: stripHtml(selectedContent),
+        };
+      })
+      .filter((section) => section.content.trim().length > 0);
 
     const citations = await citationService.getCitationsForSession(sessionId);
     const canonicalLookup = buildCanonicalCitationLookup(citations);
-    const plainSections = sections.map(section => {
-      const plain = stripHtml(section.raw);
-      return {
-        key: section.key,
-        title: titleize(section.key),
-        content: plain
-      };
-    });
-
-    const orderedCitationKeys = extractOrderedCitationKeysFromSections(plainSections, canonicalLookup);
+    const orderedCitationKeys = extractOrderedCitationKeysFromSections(rawSections, canonicalLookup);
     const fallbackUsedKeys = orderedCitationKeys.length === 0
       ? Array.from(new Set(
-          plainSections
-            .flatMap(section => DraftingService.extractCitationKeys(section.content))
-            .map(key => resolveCitationKeyFromLookup(String(key || '').trim(), canonicalLookup) || String(key || '').trim())
-            .filter(Boolean)
+          rawSections
+            .flatMap((section) => DraftingService.extractCitationKeys(section.content))
+            .map((key) => resolveCitationKeyFromLookup(String(key || '').trim(), canonicalLookup) || String(key || '').trim())
+            .filter(Boolean),
         ))
       : [];
-    const usedCitationKeys = orderedCitationKeys.length > 0
-      ? orderedCitationKeys
-      : fallbackUsedKeys;
-
+    const usedCitationKeys = orderedCitationKeys.length > 0 ? orderedCitationKeys : fallbackUsedKeys;
     const filteredCitations = usedCitationKeys.length > 0
-      ? citations.filter(citation => usedCitationKeys.includes(citation.citationKey))
+      ? citations.filter((citation) => usedCitationKeys.includes(citation.citationKey))
       : citations;
+
     const isNumericOrderStyle = NUMERIC_ORDER_STYLES.has(styleCode.toUpperCase());
     const citationOrdering = mergeCitationOrder(
       orderedCitationKeys,
-      filteredCitations.map(citation => citation.citationKey)
+      filteredCitations.map((citation) => citation.citationKey),
     );
     const citationNumbering = isNumericOrderStyle
       ? buildCitationNumberingMap(citationOrdering)
       : undefined;
 
     const formattedSections = await Promise.all(
-      plainSections.map(async section => {
+      rawSections.map(async (section) => {
         const processed = await DraftingService.postProcessSection(
           section.content,
           sessionId,
           styleCode,
-          {
-            citationNumbering
-          }
+          { citationNumbering },
         );
         return {
-          key: section.key,
-          title: section.title,
-          content: processed.processedContent
+          ...section,
+          content: processed.processedContent,
         };
-      })
+      }),
     );
 
     const bibliographyCitations = isNumericOrderStyle
       ? sortCitationsByOrderedKeys(filteredCitations, citationOrdering)
       : filteredCitations;
-    const bibliography = await citationStyleService.generateBibliography(
-      bibliographyCitations.map(toCitationData),
-      styleCode,
-      isNumericOrderStyle ? { sortOrder: 'order_of_appearance' } : undefined
-    );
-
-    const figures = (session.figurePlans || [])
-      .slice()
-      .sort((a, b) => a.figureNo - b.figureNo)
-      .map(figure => ({
-        figureNo: figure.figureNo,
-        title: figure.title,
-        description: figure.description
-      }));
+    const bibliography = bibliographyCitations.length > 0
+      ? await citationStyleService.generateBibliography(
+          bibliographyCitations.map(toCitationData),
+          styleCode,
+          isNumericOrderStyle ? { sortOrder: 'order_of_appearance' } : undefined,
+        )
+      : '';
 
     const title = session.researchTopic?.title || draft.title || 'Untitled Paper';
-    const formatting = parseFormattingGuidelines(session.publicationVenue);
+    const figures = await Promise.all(
+      (session.figurePlans || [])
+        .slice()
+        .sort((left, right) => left.figureNo - right.figureNo)
+        .map(async (figure) => {
+          const nodes = typeof figure.nodes === 'object' && figure.nodes !== null && !Array.isArray(figure.nodes)
+            ? figure.nodes as Record<string, unknown>
+            : {};
+          const rawImagePath = typeof nodes.imagePath === 'string' ? nodes.imagePath : '';
+          const asset = rawImagePath ? await readFigureAsset(rawImagePath, figure.figureNo) : null;
+          const caption = typeof nodes.caption === 'string' && nodes.caption.trim()
+            ? nodes.caption.trim()
+            : figure.description || '';
+
+          return {
+            figureNo: figure.figureNo,
+            title: figure.title,
+            description: figure.description,
+            caption,
+            asset,
+          };
+        }),
+    );
 
     if (format === 'docx') {
       const buffer = await buildPaperDocxBuffer({
         title,
         sections: formattedSections,
         bibliography,
-        figures,
-        formatting
+        figures: figures.map((figure) => ({
+          figureNo: figure.figureNo,
+          title: figure.title,
+          description: figure.caption || figure.description,
+        })),
+        formatting: docxFormatting,
       });
 
       return new NextResponse(buffer as BodyInit, {
         headers: {
           'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          'Content-Disposition': `attachment; filename="paper_${sessionId}.docx"`
-        }
+          'Content-Disposition': `attachment; filename="paper_${sessionId}.docx"`,
+        },
       });
     }
 
     if (format === 'latex') {
-      const result = buildLatexExport({
+      const latexResult = buildLatexExport({
         title,
-        sections: plainSections,
-        figures: figures.map(figure => ({
+        sections: rawSections,
+        figures: figures.map((figure) => ({
           figureNo: figure.figureNo,
-          caption: `${figure.title || `Figure ${figure.figureNo}`}${figure.description ? ` - ${figure.description}` : ''}`
+          caption: `${figure.title || `Figure ${figure.figureNo}`}${figure.caption ? ` - ${figure.caption}` : ''}`,
+          imagePath: figure.asset?.zipPath || undefined,
         })),
         citations: filteredCitations.map(toCitationData),
-        bibliographyStyle: resolveBibliographyStyle(styleCode),
-        formatting: {
-          marginInches: formatting.marginsCm.top / 2.54,
-          lineSpacing: formatting.lineSpacing,
-          fontSizePt: formatting.fontSizePt
-        }
+        bibliographyStyle: exportConfig.bibliographyStyle,
+        formatting: latexFormatting,
       });
 
-      return new NextResponse(result.latex, {
-        headers: {
-          'Content-Type': 'application/x-tex',
-          'Content-Disposition': `attachment; filename="paper_${sessionId}.tex"`
+      const AdmZip = loadZip();
+      const zip = new AdmZip();
+      zip.addFile(`paper_${sessionId}.tex`, Buffer.from(latexResult.latex, 'utf8'));
+      zip.addFile('references.bib', Buffer.from(latexResult.bibtex || '', 'utf8'));
+
+      for (const figure of figures) {
+        if (figure.asset) {
+          zip.addFile(figure.asset.zipPath, figure.asset.buffer);
         }
+      }
+
+      const archive = zip.toBuffer();
+      return new NextResponse(archive as BodyInit, {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="paper_${sessionId}_latex.zip"`,
+        },
       });
     }
 
     const bibtex = exportCitationsToBibtex(
-      filteredCitations.map(citation => ({
+      filteredCitations.map((citation) => ({
         ...toCitationData(citation),
-        sourceType: citation.sourceType
-      }))
+        sourceType: citation.sourceType,
+      })),
     );
 
     return new NextResponse(bibtex, {
       headers: {
         'Content-Type': 'text/x-bibtex',
-        'Content-Disposition': `attachment; filename="paper_${sessionId}.bib"`
-      }
+        'Content-Disposition': `attachment; filename="paper_${sessionId}.bib"`,
+      },
     });
   } catch (error) {
     console.error('[PaperExport] error:', error);

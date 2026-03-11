@@ -183,9 +183,11 @@ export const TEMPLATE_KEYS = {
   FIGURE_GROUNDING_BLOCK: 'figure_grounding_block',
   TEXT_ACTION_CREATE_SECTIONS: 'text_action_create_sections',
   PAPER_MANUSCRIPT_REVIEW_QUICK: 'paper_manuscript_review_quick',
+  PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY: 'paper_manuscript_review_context_summary',
   PAPER_MANUSCRIPT_REVIEW_SECTION: 'paper_manuscript_review_section',
   PAPER_MANUSCRIPT_REVIEW_AGGREGATION: 'paper_manuscript_review_aggregation',
   PAPER_MANUSCRIPT_IMPROVE_REWRITE: 'paper_manuscript_improve_rewrite',
+  PAPER_EXPORT_EXTRACTION: 'paper_export_extraction',
 } as const;
 
 export const systemPromptTemplateService = new SystemPromptTemplateService();

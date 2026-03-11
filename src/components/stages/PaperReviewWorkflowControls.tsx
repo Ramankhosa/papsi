@@ -33,8 +33,8 @@ const PIPELINE_STAGES: Array<{
   },
   {
     key: 'REVIEW_EXPORT',
-    label: 'Export',
-    description: 'Run final checks and export the paper package.',
+    label: 'Adaptive Export',
+    description: 'Review formatting, run final checks, and export the paper package.',
     icon: Download,
   },
 ]

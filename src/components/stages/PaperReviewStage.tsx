@@ -37,7 +37,7 @@ type StageProps = {
 
 type ReviewProgressState = {
   reviewMode: PaperReviewMode
-  phase: 'prepare' | 'review' | 'section_review' | 'aggregate' | 'persist' | 'complete'
+  phase: 'prepare' | 'review' | 'summarize_context' | 'section_review' | 'aggregate' | 'persist' | 'complete'
   message: string
   totalSections?: number
   completedSections?: number
@@ -67,8 +67,9 @@ function progressPercent(progress: ReviewProgressState | null) {
     const total = Math.max(progress.totalSections || 1, 1)
     const completed = Math.min(progress.completedSections || 0, total)
     if (progress.phase === 'prepare') return 10
-    if (progress.phase === 'section_review') return 15 + Math.round((completed / total) * 60)
-    if (progress.phase === 'aggregate') return 82
+    if (progress.phase === 'summarize_context') return 14 + Math.round((completed / total) * 20)
+    if (progress.phase === 'section_review') return 38 + Math.round((completed / total) * 42)
+    if (progress.phase === 'aggregate') return 84
     if (progress.phase === 'persist') return 94
     return 100
   }
@@ -76,6 +77,40 @@ function progressPercent(progress: ReviewProgressState | null) {
   if (progress.phase === 'review') return 64
   if (progress.phase === 'persist') return 92
   return 100
+}
+
+function progressDetailText(progress: ReviewProgressState | null) {
+  if (!progress) return ''
+  if (progress.reviewMode !== 'section_by_section') {
+    return 'The reviewer is working against the latest saved manuscript draft'
+  }
+
+  const total = progress.totalSections || 0
+  const completed = progress.completedSections || 0
+
+  if (progress.phase === 'summarize_context' && total > 0) {
+    return `${completed} of ${total} neighboring-section context briefs prepared`
+  }
+  if (progress.phase === 'section_review' && total > 0) {
+    return `${completed} of ${total} sections reviewed with full-text target analysis`
+  }
+  if (progress.phase === 'aggregate') {
+    return 'Cross-section findings are being consolidated into one manuscript report'
+  }
+  if (progress.phase === 'persist') {
+    return 'Saving the review report and issue queue'
+  }
+  return 'Preparing the section-by-section review workspace'
+}
+
+function progressBadgeLabel(progress: ReviewProgressState | null) {
+  if (!progress) return 'Review'
+  if (progress.reviewMode !== 'section_by_section') return 'Quick review'
+  if (progress.phase === 'summarize_context') return 'Summarizing context'
+  if (progress.phase === 'section_review') return 'Reviewing sections'
+  if (progress.phase === 'aggregate') return 'Aggregating findings'
+  if (progress.phase === 'persist') return 'Saving review'
+  return 'Detailed review'
 }
 
 async function readSseStream(
@@ -396,13 +431,9 @@ export default function PaperReviewStage({
             <div>
               <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Review Progress</div>
               <div className="mt-2 text-lg font-semibold text-slate-900">{progress.message}</div>
-              <div className="mt-1 text-sm text-slate-500">
-                {progress.reviewMode === 'section_by_section' && progress.totalSections
-                  ? `${progress.completedSections || 0} of ${progress.totalSections} sections completed`
-                  : 'The reviewer is working against the latest saved manuscript draft'}
-              </div>
+              <div className="mt-1 text-sm text-slate-500">{progressDetailText(progress)}</div>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">{selectedMode === 'section_by_section' ? 'Detailed review' : 'Quick review'}</div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">{progressBadgeLabel(progress)}</div>
           </div>
           <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-100">
             <div className="h-full rounded-full bg-gradient-to-r from-slate-900 via-sky-700 to-emerald-600 transition-all duration-500" style={{ width: `${progressPercent(progress)}%` }} />
@@ -440,8 +471,8 @@ export default function PaperReviewStage({
                   <ArrowRight className="h-4 w-4" />
                 </button>
                 {pendingIssues.length === 0 && (
-                  <button type="button" onClick={() => onNavigateToStage?.('REVIEW_EXPORT')} title="Open Export checks" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-slate-300 hover:bg-slate-50">
-                    Open Export
+                  <button type="button" onClick={() => onNavigateToStage?.('REVIEW_EXPORT')} title="Open adaptive export" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-slate-300 hover:bg-slate-50">
+                    Open Adaptive Export
                   </button>
                 )}
               </div>

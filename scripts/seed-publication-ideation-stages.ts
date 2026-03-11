@@ -79,10 +79,12 @@ const PRO_PLAN_PRODUCTION_OVERRIDES: Partial<Record<string, StagePlanConfigInput
   PAPER_DIAGRAM_GENERATOR: { modelPreferences: ['gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 12_000 },
   PAPER_DIAGRAM_FROM_TEXT: { modelPreferences: ['gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 12_000 },
   PAPER_SKETCH_GENERATION: { modelPreferences: ['gemini-3.1-flash-image'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+  PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY: { modelPreferences: ['gpt-5.2'], maxTokensIn: 32_000, maxTokensOut: 4_000 },
   PAPER_REVIEW_GAPS: { modelPreferences: ['gemini-2.5-pro'], maxTokensIn: 96_000, maxTokensOut: 20_000 },
   PAPER_REVIEW_COHERENCE: { modelPreferences: ['gpt-5.2'], maxTokensIn: 120_000, maxTokensOut: 20_000 },
   PAPER_AI_REVIEW: { modelPreferences: ['gpt-5.2'], maxTokensIn: 120_000, maxTokensOut: 20_000 },
   PAPER_AI_FIX: { modelPreferences: ['gpt-5.2'], maxTokensIn: 120_000, maxTokensOut: 24_000 },
+  PAPER_EXPORT_EXTRACTION: { modelPreferences: ['gpt-5.2'], maxTokensIn: 32_000, maxTokensOut: 8_000 },
 }
 
 const stagePlan = (
@@ -359,6 +361,18 @@ const publicationStages: StageDefinition[] = [
     description: 'Infer concise, evidence-safe metadata from generated figure images using a low-cost vision model.',
     sortOrder: 43,
   },
+  {
+    code: 'PAPER_EXPORT_EXTRACTION',
+    displayName: 'Adaptive Export Extraction',
+    description: 'Extract export formatting settings from DOCX, LaTeX, or pasted formatting guidance.',
+    sortOrder: 44,
+  },
+  {
+    code: 'PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY',
+    displayName: 'Review Context Summary',
+    description: 'Extract compact structured summaries of neighboring sections for section-by-section review.',
+    sortOrder: 45,
+  },
 
   // Review and repair
   {
@@ -614,6 +628,18 @@ const stageConfigs: Record<string, StageRuntimeConfig> = {
     { modelPreferences: ['gpt-4o-mini', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'], maxTokensIn: 16_000, maxTokensOut: 2_000 },
     { modelPreferences: ['gpt-4o-mini', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'], maxTokensIn: 24_000, maxTokensOut: 2_500 },
     { modelPreferences: ['gpt-4o-mini', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'], maxTokensIn: 32_000, maxTokensOut: 3_000 }
+  ),
+  PAPER_EXPORT_EXTRACTION: stagePlan(
+    0.1,
+    { modelPreferences: ['gpt-5.2'], maxTokensIn: 24_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5.2'], maxTokensIn: 32_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 10_000 }
+  ),
+  PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY: stagePlan(
+    0.05,
+    { modelPreferences: ['gpt-5.2'], maxTokensIn: 24_000, maxTokensOut: 4_000 },
+    { modelPreferences: ['gpt-5.2'], maxTokensIn: 32_000, maxTokensOut: 4_000 },
+    { modelPreferences: ['gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 6_000 }
   ),
 
   PAPER_REVIEW_GAPS: stagePlan(

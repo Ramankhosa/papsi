@@ -2218,6 +2218,54 @@ CANONICAL_PAPER_REVIEW_MODEL:
 {{CANONICAL_PAPER_REVIEW_MODEL}}`
 }
 
+function buildPaperContextSummaryTemplate(): string {
+  return `You are extracting a compact structured context brief for a neighboring manuscript section.
+The brief will be shown to another reviewer as context only.
+
+Keep only details that affect:
+- cross-section coherence
+- claim and evidence alignment
+- method, result, and conclusion consistency
+- citation and figure grounding
+- promises this section makes to other sections
+
+Ignore rhetorical filler, repeated transitions, hedging, and prose polish notes.
+
+Return ONLY one JSON object with exactly these keys:
+{
+  "sectionRole": string,
+  "conciseSummary": string,
+  "mainClaims": string[],
+  "methodsOrApproach": string[],
+  "keyResults": string[],
+  "limitations": string[],
+  "promisesOrDependencies": string[],
+  "citedReferenceKeys": string[],
+  "figureReferences": string[],
+  "terminologyToKeep": string[],
+  "riskFlags": string[]
+}
+
+Rules:
+- conciseSummary must stay under 120 words.
+- Keep list items short and concrete.
+- Use [] when information is absent.
+- Do not critique or rewrite the section.
+- Do not include markdown fences or explanation text.
+
+PAPER_OVERVIEW:
+{{PAPER_OVERVIEW}}
+
+SECTION_METADATA:
+{{SECTION_METADATA}}
+
+SECTION_REVIEWER_PROFILE:
+{{SECTION_REVIEWER_PROFILE}}
+
+SECTION_CONTENT:
+{{SECTION_CONTENT}}`
+}
+
 function buildPaperSectionReviewTemplate(def: {
   sectionScope: string
   reviewerType: string
@@ -2423,6 +2471,15 @@ const manuscriptReviewSystemTemplates: SystemPromptDef[] = [
     content: buildPaperQuickReviewTemplate(),
     priority: 0,
     description: 'Quick whole-manuscript review prompt for the dedicated paper review stage.'
+  },
+  {
+    templateKey: 'paper_manuscript_review_context_summary',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: buildPaperContextSummaryTemplate(),
+    priority: 0,
+    description: 'Compact structured context-summary prompt used before section-by-section review.'
   },
   buildPaperSectionReviewTemplate({
     sectionScope: '*',
@@ -3275,6 +3332,32 @@ Write to PASS all five criteria. A strong conclusion leaves the reviewer with a 
 
   // ── Dedicated Manuscript Review / Improve Stage Prompts ───────────────────
   ...manuscriptReviewSystemTemplates,
+  {
+    templateKey: 'paper_export_extraction',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `You are an academic formatting expert.
+Analyze the supplied reference content and extract the export settings that should drive DOCX and LaTeX export.
+
+Rules:
+- Return ONLY valid JSON.
+- Match the provided schema exactly and do not invent extra keys.
+- If a value cannot be determined, use null for that field and 0 for its field confidence.
+- If the setting is explicitly stated or directly visible, confidence should be at least 0.8.
+- If the setting is inferred from conventions, confidence should be between 0.5 and 0.7.
+- If the setting is a weak guess, confidence must be below 0.5.
+- Never hallucinate venue requirements.
+- Prefer concrete LaTeX commands when a .tex reference is supplied.
+- Use only fonts from the curated font registry when you can match confidently.
+- fieldConfidences should use field names or nested paths such as "margins.topCm".
+- documentClass must stay within the supported export schema values.
+- latexPackages must contain package names only, without \\usepackage wrappers.
+- latexPreambleExtra may contain only safe preamble lines; do not include \\input, \\include, \\write18, shell escapes, or document body content.
+- sourceDescription should briefly describe what evidence you used.`,
+    priority: 0,
+    description: 'Dedicated adaptive export extraction prompt used to build structured DOCX/LaTeX export profiles.'
+  },
 
   // ── Writing Assistant Text Actions ───────────────────────────────────────────
   {
