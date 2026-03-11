@@ -91,6 +91,20 @@ export interface PolishRetryNotice {
 
 const CITE_PATTERN = /\[CITE:([^\]]+)\]/g;
 
+function buildPromptWordRange(maxWords: number): {
+  minWords: number;
+  maxWords: number;
+  preferredWords: number;
+} {
+  const maxWordLimit = Math.max(1, Math.floor(maxWords));
+  const minWords = Math.max(1, Math.floor(maxWordLimit * 0.75));
+  return {
+    minWords,
+    maxWords: maxWordLimit,
+    preferredWords: minWords
+  };
+}
+
 function extractCiteKeys(text: string): string[] {
   const keys: string[] = [];
   let m: RegExpExecArray | null;
@@ -127,87 +141,6 @@ function normalizePositiveWordLimit(value: unknown): number | undefined {
     return undefined;
   }
   return Math.max(1, Math.floor(numeric));
-}
-
-function computeWordCount(content: string): number {
-  const trimmed = String(content || '').replace(/<[^>]*>/g, ' ').trim();
-  if (!trimmed) return 0;
-  return trimmed.split(/\s+/).filter(Boolean).length;
-}
-
-function truncateContentToWordLimit(content: string, maxWords: number): {
-  content: string;
-  originalWords: number;
-  finalWords: number;
-  trimmed: boolean;
-} {
-  const normalized = String(content || '').trim();
-  const limit = Math.max(Math.floor(maxWords || 0), 0);
-  const originalWords = computeWordCount(normalized);
-
-  if (!normalized || limit <= 0) {
-    return {
-      content: '',
-      originalWords,
-      finalWords: 0,
-      trimmed: originalWords > 0
-    };
-  }
-
-  if (originalWords <= limit) {
-    return {
-      content: normalized,
-      originalWords,
-      finalWords: originalWords,
-      trimmed: false
-    };
-  }
-
-  const softCeiling = Math.ceil(limit * 1.15);
-  if (originalWords <= softCeiling) {
-    return {
-      content: normalized,
-      originalWords,
-      finalWords: originalWords,
-      trimmed: false
-    };
-  }
-
-  const words = normalized.split(/\s+/).filter(Boolean);
-  const roughCut = words.slice(0, softCeiling).join(' ');
-  const sentenceEndPattern = /[.!?]\s*(?:\n|$)|[.!?]["')\]]*\s/g;
-  let lastSentenceEnd = -1;
-  let match: RegExpExecArray | null;
-
-  while ((match = sentenceEndPattern.exec(roughCut)) !== null) {
-    const candidateEnd = match.index + match[0].trimEnd().length;
-    const candidateWordCount = computeWordCount(roughCut.slice(0, candidateEnd));
-    if (candidateWordCount >= Math.floor(limit * 0.7)) {
-      lastSentenceEnd = candidateEnd;
-    }
-  }
-
-  if (lastSentenceEnd > 0) {
-    const sentenceBounded = roughCut.slice(0, lastSentenceEnd).trim();
-    const finalWords = computeWordCount(sentenceBounded);
-    if (finalWords >= Math.floor(limit * 0.7)) {
-      return {
-        content: sentenceBounded,
-        originalWords,
-        finalWords,
-        trimmed: true
-      };
-    }
-  }
-
-  const clipped = words.slice(0, limit).join(' ').trim();
-  const finalWords = computeWordCount(clipped);
-  return {
-    content: clipped,
-    originalWords,
-    finalWords,
-    trimmed: true
-  };
 }
 
 function buildDriftReport(
@@ -299,7 +232,7 @@ async function buildPolishPrompt(
   input: PolishInput,
   isRetry: boolean,
   previousReport?: DriftReport
-): Promise<{ prompt: string; effectiveWordLimit?: number }> {
+): Promise<string> {
   const retryBlock = isRetry && previousReport ? `
 ═══════════════════════════════════════════════════════════════════════════════
 ⚠️  RETRY — PREVIOUS ATTEMPT FAILED VALIDATION
@@ -349,8 +282,10 @@ Restore the required mapped-evidence citations for every uncovered dimension.
 
       const constraintNotes: string[] = [];
       if (effectiveWordLimit) {
-        constraintNotes.push(`Target length: about ${effectiveWordLimit} words`);
-        constraintNotes.push(`Hard cap: do not exceed ${effectiveWordLimit} words`);
+        const wordRange = buildPromptWordRange(effectiveWordLimit);
+        constraintNotes.push(
+          `Length range: ${wordRange.minWords}-${wordRange.maxWords} words (aim near ${wordRange.preferredWords})`
+        );
       }
       if (typePrompt.constraints.styleRequirements?.length) {
         constraintNotes.push(`Style: ${typePrompt.constraints.styleRequirements.join(', ')}`);
@@ -448,15 +383,19 @@ Your job is to elevate the prose to publication quality:
     ]);
 
   const wordLimitBlock = effectiveWordLimit
-    ? `
+    ? (() => {
+      const wordRange = buildPromptWordRange(effectiveWordLimit);
+      return `
 LENGTH CONTROL
-- Target length: about ${effectiveWordLimit} words.
-- Hard cap: do not exceed ${effectiveWordLimit} words.
-- If the draft is longer, compress, merge, and tighten prose rather than adding new material.
+- Intended section budget: ${wordRange.maxWords} words.
+- Write within ${wordRange.minWords}-${wordRange.maxWords} words.
+- Aim near ${wordRange.preferredWords} words so moderate model overshoot still lands close to the intended budget.
+- Compress, merge, and tighten prose rather than cutting off analysis or padding toward the upper bound.
 `
+    })()
     : '';
 
-  return { prompt: `
+  return `
 ═══════════════════════════════════════════════════════════════════════════════
 TASK: PUBLICATION POLISH — ${input.displayName.toUpperCase()}
 ═══════════════════════════════════════════════════════════════════════════════
@@ -490,9 +429,7 @@ OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════════════════════
 Return ONLY the polished section content in Markdown. No JSON wrapping,
 no code fences, no preamble. Start directly with the content.
-Every [CITE:key] from the draft above MUST appear in your output.`,
-    effectiveWordLimit
-  };
+Every [CITE:key] from the draft above MUST appear in your output.`;
 }
 
 // ============================================================================
@@ -552,7 +489,7 @@ class SectionPolishService {
     isRetry: boolean,
     previousReport?: DriftReport
   ): Promise<PolishResult> {
-    const { prompt, effectiveWordLimit } = await buildPolishPrompt(input, isRetry, previousReport);
+    const prompt = await buildPolishPrompt(input, isRetry, previousReport);
 
     try {
       const result = await llmGateway.executeLLMOperation(
@@ -592,18 +529,6 @@ class SectionPolishService {
       }
 
       polished = stripInlineMarkdownStyling(polishDraftMarkdown(polished));
-      if (effectiveWordLimit) {
-        const trimmed = truncateContentToWordLimit(polished, effectiveWordLimit);
-        if (trimmed.trimmed) {
-          console.warn('[SectionPolish] Trimmed polished output to word budget', {
-            sectionKey: input.sectionKey,
-            limit: effectiveWordLimit,
-            originalWords: trimmed.originalWords,
-            finalWords: trimmed.finalWords
-          });
-        }
-        polished = trimmed.content;
-      }
 
       const driftReport = buildDriftReport(input.baseContent, polished, input.dimensionCitations);
 
@@ -629,4 +554,4 @@ class SectionPolishService {
 // ============================================================================
 
 export const sectionPolishService = new SectionPolishService();
-export { extractCiteKeys, extractNumbers, buildDriftReport, truncateContentToWordLimit };
+export { extractCiteKeys, extractNumbers, buildDriftReport };

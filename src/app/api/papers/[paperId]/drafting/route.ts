@@ -578,6 +578,15 @@ function buildFullDraftText(extraSections: Record<string, string>, sectionOrder:
   return headings.join('\n\n');
 }
 
+function formatDraftCitationUsageInText(citation: Pick<SessionCitation, 'authors' | 'year'>): string {
+  const authors = Array.isArray(citation.authors)
+    ? citation.authors.slice(0, 2).map(author => String(author || '').trim()).filter(Boolean)
+    : [];
+  const authorLabel = authors.length > 0 ? authors.join(' & ') : 'Unknown';
+  const yearLabel = citation.year || 'n.d.';
+  return `(${authorLabel}, ${yearLabel})`;
+}
+
 function toCitationData(citation: any): CitationData {
   return {
     id: citation.id,
@@ -1468,43 +1477,56 @@ async function syncSectionDraftCitationUsage(params: {
   const canonicalLookup = buildCanonicalCitationLookup(citations);
   const citationByKey = new Map(citations.map(c => [c.citationKey, c]));
   const citationKeys = extractSectionCitationKeys(sectionContent, canonicalLookup);
+  const contextSnippet = sectionContent.slice(0, 200);
 
-  const activeCitationIds = new Set(
-    citationKeys
-      .map(key => citationByKey.get(key)?.id)
-      .filter((id): id is string => Boolean(id))
-  );
-
-  const existing = await prisma.citationUsage.findMany({
-    where: {
-      sectionKey,
-      usageKind: 'DRAFT_CITATION',
-      citation: { sessionId }
-    },
-    select: {
-      id: true,
-      citationId: true
-    }
-  });
-
-  const staleUsageIds = existing
-    .filter(usage => !activeCitationIds.has(usage.citationId))
-    .map(usage => usage.id);
-  if (staleUsageIds.length > 0) {
-    await prisma.citationUsage.deleteMany({
-      where: { id: { in: staleUsageIds } }
-    });
-  }
+  const activeCitations = citationKeys
+    .map((citationKey) => citationByKey.get(citationKey))
+    .filter((citation): citation is SessionCitation => Boolean(citation?.id));
+  const activeCitationIds = activeCitations.map(citation => citation.id);
 
   let attributedCount = 0;
   let ambiguousCount = 0;
   const unattributedKeys: string[] = [];
 
+  const attributionRows = activeCitationIds.length > 0
+    ? await prisma.citationUsage.findMany({
+      where: {
+        citationId: { in: activeCitationIds },
+        usageKind: 'DIMENSION_MAPPING',
+        dimension: { not: null },
+        inclusionStatus: 'INCLUDED'
+      },
+      select: {
+        citationId: true,
+        sectionKey: true,
+        dimension: true
+      }
+    })
+    : [];
+
+  const attributionByCitationId = new Map<string, { dimension: string | null; ambiguous: boolean }>();
+  for (const citation of activeCitations) {
+    const uniqueDimensions = Array.from(new Set(
+      attributionRows
+        .filter((row) =>
+          row.citationId === citation.id
+          && normalizeSectionKey(row.sectionKey) === sectionKey
+        )
+        .map((row) => String(row.dimension || '').trim())
+        .filter(Boolean)
+    ));
+
+    attributionByCitationId.set(citation.id, {
+      dimension: uniqueDimensions.length === 1 ? uniqueDimensions[0] : null,
+      ambiguous: uniqueDimensions.length > 1
+    });
+  }
+
   for (const citationKey of citationKeys) {
     const citation = citationByKey.get(citationKey);
-    if (!citation) continue;
+    if (!citation?.id) continue;
 
-    const attribution = await resolveCitationAttribution(citation.id, sectionKey);
+    const attribution = attributionByCitationId.get(citation.id) || { dimension: null, ambiguous: false };
     if (attribution.dimension) {
       attributedCount++;
     } else if (attribution.ambiguous) {
@@ -1513,17 +1535,37 @@ async function syncSectionDraftCitationUsage(params: {
     } else {
       unattributedKeys.push(citationKey);
     }
+  }
 
-    await citationService.markCitationUsed(
-      citation.id,
-      sectionKey,
-      sectionContent.slice(0, 200),
-      undefined,
-      {
+  await prisma.$transaction(async (tx) => {
+    await tx.citationUsage.deleteMany({
+      where: {
+        sectionKey,
         usageKind: 'DRAFT_CITATION',
-        dimension: attribution.dimension
+        citation: { sessionId }
       }
-    );
+    });
+
+    if (activeCitations.length === 0) {
+      return;
+    }
+
+    await tx.citationUsage.createMany({
+      data: activeCitations.map((citation) => ({
+        citationId: citation.id,
+        sectionKey,
+        contextSnippet,
+        inTextFormat: formatDraftCitationUsageInText(citation),
+        usageKind: 'DRAFT_CITATION' as const
+      }))
+    });
+  });
+
+  if (activeCitations.length > 0) {
+    console.debug('[PaperDrafting] Synced section draft citation usage', {
+      sectionKey,
+      citationCount: activeCitations.length
+    });
   }
 
   return {
@@ -3752,25 +3794,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function splitForStreaming(content: string, targetSize: number = 140): string[] {
-  const text = content || '';
-  if (!text.trim()) return [''];
-  const chunks: string[] = [];
-  let cursor = 0;
-  while (cursor < text.length) {
-    let end = Math.min(cursor + targetSize, text.length);
-    if (end < text.length) {
-      const nextBreak = text.lastIndexOf(' ', end);
-      if (nextBreak > cursor + Math.floor(targetSize / 2)) {
-        end = nextBreak + 1;
-      }
-    }
-    chunks.push(text.slice(cursor, end));
-    cursor = end;
-  }
-  return chunks;
-}
-
 function createSSEStreamResponse(
   streamHandler: (send: (event: string, payload: unknown) => void) => Promise<void>
 ): Response {
@@ -4065,19 +4088,7 @@ async function generateSection(
     );
   }
 
-  const sectionBudgetTrim = sectionWordBudget !== undefined
-    ? truncateContentToWordLimit(rawContent, sectionWordBudget)
-    : null;
-  if (sectionBudgetTrim?.trimmed) {
-    console.warn('[PaperDrafting] Trimmed section content to word budget before post-processing', {
-      sectionKey,
-      limit: sectionWordBudget,
-      originalWords: sectionBudgetTrim.originalWords,
-      finalWords: sectionBudgetTrim.finalWords,
-      generationMode: useTwoPassPipeline ? 'two_pass' : 'topup_final'
-    });
-  }
-  const sectionContent = sectionBudgetTrim ? sectionBudgetTrim.content : rawContent;
+  const sectionContent = rawContent;
   const knownSessionKeys = new Set(citations.map(c => c.citationKey));
 
   await emitStatus?.(
@@ -4233,17 +4244,25 @@ async function generateSection(
   }
 
   await emitStatus?.('persist', 'Saving section and citation usage metadata');
-  const updatedDraft = await updateDraftContent(
-    draft.id,
-    sectionKey,
-    polishedContent,
-    paperTypeCode,
-    {
-      prompt,
-      response: sectionContent,
-      tokensUsed: llmTokensUsed
-    }
-  );
+  const [updatedDraft, usageSync] = await Promise.all([
+    updateDraftContent(
+      draft.id,
+      sectionKey,
+      polishedContent,
+      paperTypeCode,
+      {
+        prompt,
+        response: sectionContent,
+        tokensUsed: llmTokensUsed
+      }
+    ),
+    syncSectionDraftCitationUsage({
+      sessionId,
+      sectionKey,
+      sectionContent: polishedContent,
+      citations
+    })
+  ]);
 
   if (updatedDraft) {
     const sections = normalizeExtraSections(updatedDraft.extraSections);
@@ -4255,13 +4274,6 @@ async function generateSection(
       }
     });
   }
-
-  const usageSync = await syncSectionDraftCitationUsage({
-    sessionId,
-    sectionKey,
-    sectionContent: polishedContent,
-    citations
-  });
   const finalCitationKeys = usageSync.citationKeys;
   const attributedCount = usageSync.attributedCount;
   const ambiguousCount = usageSync.ambiguousCount;
@@ -6794,31 +6806,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             sendStatus
           );
 
-          await sendStatus('compose', 'Composing final draft for live output');
-          await sleep(900);
-
-          const chunks = splitForStreaming(generated.content, 140);
-          let assembled = '';
-          for (let index = 0; index < chunks.length; index++) {
-            const delta = chunks[index];
-            assembled += delta;
-            send('chunk', {
-              sectionKey,
-              index: index + 1,
-              total: chunks.length,
-              delta,
-              content: assembled
-            });
-
-            const shouldPause = index > 0 && index < chunks.length - 1 && index % 6 === 0;
-            if (shouldPause) {
-              send('pause', { sectionKey, ms: 900 });
-              await sleep(900);
-            } else {
-              await sleep(120);
-            }
-          }
-
+          await sendStatus('compose', 'Preparing final draft for display');
           send('result', generated);
         });
       }
@@ -7324,12 +7312,20 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           where: { sessionId }
         });
         const draft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
-        const updatedDraft = await updateDraftContent(
-          draft.id,
-          sectionKey,
-          sectionContentForPersist,
-          paperTypeCode
-        );
+        const [updatedDraft, usageSync] = await Promise.all([
+          updateDraftContent(
+            draft.id,
+            sectionKey,
+            sectionContentForPersist,
+            paperTypeCode
+          ),
+          syncSectionDraftCitationUsage({
+            sessionId,
+            sectionKey,
+            sectionContent: sectionContentForPersist,
+            citations: bundle.citations
+          })
+        ]);
         if (updatedDraft) {
           const sections = normalizeExtraSections(updatedDraft.extraSections);
           const totalWordCount = Object.values(sections).reduce((acc, value) => acc + computeWordCount(value), 0);
@@ -7340,13 +7336,6 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             }
           });
         }
-
-        const usageSync = await syncSectionDraftCitationUsage({
-          sessionId,
-          sectionKey,
-          sectionContent: sectionContentForPersist,
-          citations: bundle.citations
-        });
 
         let prefetchedProposal: DimensionDraftProposal | null = null;
         if (payload.prefetchNext) {
@@ -7605,12 +7594,20 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         });
 
         const draft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
-        const updatedDraft = await updateDraftContent(
-          draft.id,
-          sectionKey,
-          content,
-          paperTypeCode
-        );
+        const [updatedDraft, usageSync] = await Promise.all([
+          updateDraftContent(
+            draft.id,
+            sectionKey,
+            content,
+            paperTypeCode
+          ),
+          syncSectionDraftCitationUsage({
+            sessionId,
+            sectionKey,
+            sectionContent: content,
+            citations
+          })
+        ]);
 
         if (updatedDraft) {
           const sections = normalizeExtraSections(updatedDraft.extraSections);
@@ -7622,13 +7619,6 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             }
           });
         }
-
-        const usageSync = await syncSectionDraftCitationUsage({
-          sessionId,
-          sectionKey,
-          sectionContent: content,
-          citations
-        });
 
         return NextResponse.json({
           sectionKey,

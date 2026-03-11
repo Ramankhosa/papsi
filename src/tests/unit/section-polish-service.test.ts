@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDriftReport, truncateContentToWordLimit } from '../../lib/services/section-polish-service';
+import { buildDriftReport } from '../../lib/services/section-polish-service';
 
 describe('buildDriftReport', () => {
   it('passes when required citation coverage is preserved even if other drift exists', () => {
@@ -47,35 +47,5 @@ describe('buildDriftReport', () => {
     expect(report.numberPreservation.passed).toBe(false);
     expect(report.dimensionCoverage).toBeUndefined();
     expect(report.passed).toBe(true);
-  });
-});
-
-describe('truncateContentToWordLimit', () => {
-  it('keeps small overages within the soft tolerance', () => {
-    const content = Array.from({ length: 110 }, (_, index) => `word${index}`).join(' ');
-
-    const result = truncateContentToWordLimit(content, 100);
-
-    expect(result.trimmed).toBe(false);
-    expect(result.originalWords).toBe(110);
-    expect(result.finalWords).toBe(110);
-  });
-
-  it('trims large overages near a sentence boundary', () => {
-    const content = Array.from(
-      { length: 14 },
-      (_, sentenceIndex) => Array.from(
-        { length: 10 },
-        (_, wordIndex) => `s${sentenceIndex}w${wordIndex}`
-      ).join(' ') + '.'
-    ).join(' ');
-
-    const result = truncateContentToWordLimit(content, 100);
-
-    expect(result.trimmed).toBe(true);
-    expect(result.originalWords).toBe(140);
-    expect(result.finalWords).toBeLessThanOrEqual(115);
-    expect(result.finalWords).toBeGreaterThanOrEqual(70);
-    expect(result.content.endsWith('.')).toBe(true);
   });
 });
