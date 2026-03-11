@@ -105,6 +105,79 @@ function buildPromptWordRange(maxWords: number): {
   };
 }
 
+function countWords(text: string): number {
+  const normalized = String(text || '').trim();
+  if (!normalized) {
+    return 0;
+  }
+  return normalized.split(/\s+/).filter(Boolean).length;
+}
+
+function collectRequiredCitationKeys(
+  dimensionCitations?: DimensionCitationExpectation[]
+): string[] {
+  if (!dimensionCitations?.length) {
+    return [];
+  }
+
+  const orderedKeys: string[] = [];
+  const seen = new Set<string>();
+  for (const dimension of dimensionCitations) {
+    for (const key of dimension.expectedCitationKeys || []) {
+      const normalized = String(key || '').trim();
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      orderedKeys.push(normalized);
+    }
+  }
+  return orderedKeys;
+}
+
+function buildBudgetPriorityOverride(
+  baseContent: string,
+  targetWordCount: number | undefined,
+  requiredCitationKeys: string[]
+): string {
+  const effectiveWordLimit = normalizePositiveWordLimit(targetWordCount);
+  if (!effectiveWordLimit) {
+    return '';
+  }
+
+  const sourceWords = countWords(baseContent);
+  if (!sourceWords) {
+    return '';
+  }
+
+  const requiredCitationLine = requiredCitationKeys.length > 0
+    ? `- REQUIRED citation anchors that must remain: ${requiredCitationKeys.map((key) => `[CITE:${key}]`).join(', ')}.`
+    : '- No must-cite anchors were provided. Retain citation anchors only where they directly support the final compressed claims.';
+
+  const overshootWords = Math.max(sourceWords - effectiveWordLimit, 0);
+  if (overshootWords === 0) {
+    return `
+BUDGET DISCIPLINE
+- Source draft length: ${sourceWords} words.
+- Stay inside the requested range and do not expand the draft just to make it sound more polished.
+${requiredCitationLine}
+- Do not invent new claims, statistics, or citation anchors.
+`;
+  }
+
+  const overshootPercent = Math.max(1, Math.round((overshootWords / sourceWords) * 100));
+  return `
+BUDGET PRIORITY OVERRIDE
+- Source draft length: ${sourceWords} words.
+- The source draft exceeds the intended budget by ${overshootWords} words (~${overshootPercent}%).
+- Length discipline overrides any earlier instruction that sounds like "preserve every sentence", "preserve all citations", or "do not remove any detail".
+- Preserve the core argument, the required citation coverage, and only the quantitative facts needed to support the final surviving claims.
+- You MAY merge or omit repetitive phrasing, secondary examples, optional citations, and non-essential numeric detail to fit the budget.
+${requiredCitationLine}
+- Never invent new claims, statistics, or citation anchors while compressing.
+`;
+}
+
 function extractCiteKeys(text: string): string[] {
   const keys: string[] = [];
   let m: RegExpExecArray | null;
@@ -233,6 +306,10 @@ async function buildPolishPrompt(
   isRetry: boolean,
   previousReport?: DriftReport
 ): Promise<string> {
+  const requiredCitationKeys = collectRequiredCitationKeys(input.dimensionCitations);
+  const requiredCitationOutputInstruction = requiredCitationKeys.length > 0
+    ? 'Every REQUIRED [CITE:key] listed above MUST appear in your output. Optional source citations may be omitted if they are no longer needed after compression. Do not invent new [CITE:key].'
+    : 'Retain citation anchors only where they support the final claims. Do not invent new [CITE:key].';
   const retryBlock = isRetry && previousReport ? `
 ═══════════════════════════════════════════════════════════════════════════════
 ⚠️  RETRY — PREVIOUS ATTEMPT FAILED VALIDATION
@@ -242,7 +319,7 @@ ${previousReport.citationParity.missing.length > 0 ? `• MISSING CITATIONS (mus
 ${previousReport.citationParity.added.length > 0 ? `• ADDED CITATIONS (must remove): ${previousReport.citationParity.added.map(k => `[CITE:${k}]`).join(', ')}` : ''}
 ${previousReport.numberPreservation.missing.length > 0 ? `• MISSING NUMBERS (must restore): ${previousReport.numberPreservation.missing.join(', ')}` : ''}
 ${previousReport.numberPreservation.added.length > 0 ? `• FABRICATED NUMBERS (must remove): ${previousReport.numberPreservation.added.join(', ')}` : ''}
-Pay extreme attention to citation anchors. Every [CITE:key] from the input MUST appear in your output.
+Pay extreme attention to required citation anchors. ${requiredCitationOutputInstruction}
 ` : '';
   const effectiveRetryBlock = isRetry && previousReport?.dimensionCoverage
     ? `
@@ -382,6 +459,12 @@ Your job is to elevate the prose to publication quality:
       systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_RHYTHM_RULES, ...scopeLookup }, FALLBACK_RHYTHM),
     ]);
 
+  const budgetPriorityOverride = buildBudgetPriorityOverride(
+    input.baseContent,
+    effectiveWordLimit,
+    requiredCitationKeys
+  );
+
   const wordLimitBlock = effectiveWordLimit
     ? (() => {
       const wordRange = buildPromptWordRange(effectiveWordLimit);
@@ -417,6 +500,7 @@ ${improvementDirectives}
 ${hedgingRules}
 
 ${rhythmRules}
+${budgetPriorityOverride}
 ${wordLimitBlock}
 ${publicationTypeBlock}
 ═══════════════════════════════════════════════════════════════════════════════
@@ -429,7 +513,7 @@ OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════════════════════
 Return ONLY the polished section content in Markdown. No JSON wrapping,
 no code fences, no preamble. Start directly with the content.
-Every [CITE:key] from the draft above MUST appear in your output.`;
+${requiredCitationOutputInstruction}`;
 }
 
 // ============================================================================
@@ -554,4 +638,10 @@ class SectionPolishService {
 // ============================================================================
 
 export const sectionPolishService = new SectionPolishService();
-export { extractCiteKeys, extractNumbers, buildDriftReport };
+export {
+  extractCiteKeys,
+  extractNumbers,
+  buildDriftReport,
+  buildBudgetPriorityOverride,
+  collectRequiredCitationKeys,
+};

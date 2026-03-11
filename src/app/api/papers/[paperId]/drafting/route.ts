@@ -4400,30 +4400,39 @@ async function buildSectionPromptRuntimeBundle(params: {
   const sectionContextPolicy = await sectionTemplateService.getSectionContextPolicy(normalizedSectionKey, paperTypeCode);
   const useMappedEvidence = sectionContextPolicy.requiresCitations ? requestedMappedEvidence : false;
 
-  const researchTopic = await prisma.researchTopic.findUnique({
-    where: { sessionId }
-  });
-  const citations = await citationService.getCitationsForSession(sessionId);
-  const evidencePack = useMappedEvidence
-    ? await evidencePackService.getEvidencePack(sessionId, normalizedSectionKey)
-    : null;
+  const [
+    researchTopic,
+    citations,
+    evidencePack,
+    draft,
+    figurePromptContext,
+    blueprint
+  ] = await Promise.all([
+    prisma.researchTopic.findUnique({
+      where: { sessionId }
+    }),
+    citationService.getCitationsForSession(sessionId),
+    useMappedEvidence
+      ? evidencePackService.getEvidencePack(sessionId, normalizedSectionKey)
+      : Promise.resolve(null),
+    getPaperDraft(sessionId),
+    loadFigurePromptContext({
+      sessionId,
+      sectionKey: normalizedSectionKey,
+      useFigures: params.useFigures,
+      selectedFigureIds: params.selectedFigureIds
+    }),
+    blueprintService.getBlueprint(sessionId)
+  ]);
   const citationContext = await DraftingService.buildCitationContext(sessionId, normalizedSectionKey, {
     useMappedEvidence,
     preloadedEvidencePack: evidencePack
   });
 
-  const draft = await getPaperDraft(sessionId);
   const extraSections = normalizeExtraSections(draft?.extraSections);
-  const figurePromptContext = await loadFigurePromptContext({
-    sessionId,
-    sectionKey: normalizedSectionKey,
-    useFigures: params.useFigures,
-    selectedFigureIds: params.selectedFigureIds
-  });
 
   let blueprintPromptContext: BlueprintPromptContext | undefined;
   let blueprintWordBudget: number | undefined;
-  const blueprint = await blueprintService.getBlueprint(sessionId);
   if (blueprint) {
     const currentSectionPlan = blueprint.sectionPlan.find(
       (entry) => normalizeSectionKey(entry.sectionKey) === normalizedSectionKey
@@ -4467,15 +4476,16 @@ async function buildSectionPromptRuntimeBundle(params: {
     };
   }
 
-  const previousSectionMemories = blueprint
-    ? await getPreviousSectionMemories(sessionId, normalizedSectionKey, blueprint)
-    : [];
-
-  const sectionWordBudget = await resolveSectionWordBudget({
-    sectionKey: normalizedSectionKey,
-    paperTypeCode,
-    blueprintWordBudget
-  });
+  const [previousSectionMemories, sectionWordBudget] = await Promise.all([
+    blueprint
+      ? getPreviousSectionMemories(sessionId, normalizedSectionKey, blueprint)
+      : Promise.resolve([]),
+    resolveSectionWordBudget({
+      sectionKey: normalizedSectionKey,
+      paperTypeCode,
+      blueprintWordBudget
+    })
+  ]);
 
   let evidencePromptContext: EvidencePromptContext;
   if (useMappedEvidence) {
@@ -4536,32 +4546,34 @@ async function buildSectionPromptRuntimeBundle(params: {
     previousSections: extraSections
   };
 
-  const prompt = await buildPrompt(
-    normalizedSectionKey,
-    paperTypeCode,
-    sharedContext,
-    useMappedEvidence ? citationContext.citationInstructions : '',
-    params.instructions,
-    params.writingSampleBlock,
-    blueprintPromptContext,
-    evidencePromptContext,
-    figurePromptContext,
-    'markdown',
-    previousSectionMemories
-  );
-  const pass1Prompt = await buildPrompt(
-    normalizedSectionKey,
-    paperTypeCode,
-    sharedContext,
-    useMappedEvidence ? citationContext.citationInstructions : '',
-    params.instructions,
-    params.writingSampleBlock,
-    blueprintPromptContext,
-    evidencePromptContext,
-    figurePromptContext,
-    'pass1_json',
-    previousSectionMemories
-  );
+  const [prompt, pass1Prompt] = await Promise.all([
+    buildPrompt(
+      normalizedSectionKey,
+      paperTypeCode,
+      sharedContext,
+      useMappedEvidence ? citationContext.citationInstructions : '',
+      params.instructions,
+      params.writingSampleBlock,
+      blueprintPromptContext,
+      evidencePromptContext,
+      figurePromptContext,
+      'markdown',
+      previousSectionMemories
+    ),
+    buildPrompt(
+      normalizedSectionKey,
+      paperTypeCode,
+      sharedContext,
+      useMappedEvidence ? citationContext.citationInstructions : '',
+      params.instructions,
+      params.writingSampleBlock,
+      blueprintPromptContext,
+      evidencePromptContext,
+      figurePromptContext,
+      'pass1_json',
+      previousSectionMemories
+    )
+  ]);
 
   return {
     sectionKey: normalizedSectionKey,
