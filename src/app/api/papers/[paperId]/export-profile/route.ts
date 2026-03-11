@@ -6,6 +6,8 @@ import { authenticateUser } from '@/lib/auth-middleware';
 import { parseVenueExportProfile, resolveExportConfigWithSources, summarizeDocxExportConfig, summarizeLatexExportConfig } from '@/lib/export/export-config-resolver';
 import { extractExportProfile } from '@/lib/export/export-profile-extractor';
 import { normalizeExportProfilePartial } from '@/lib/export/export-profile-schema';
+import type { TenantContext } from '@/lib/metering';
+import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import { prisma } from '@/lib/prisma';
 
 export const runtime = 'nodejs';
@@ -30,6 +32,66 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
       exportProfile: true,
     },
   });
+}
+
+async function resolveTenantContext(
+  request: NextRequest,
+  userId: string,
+  tenantId?: string | null,
+): Promise<TenantContext | null> {
+  const authorization = request.headers.get('authorization');
+  let authContext: TenantContext | null = null;
+
+  if (authorization) {
+    authContext = await extractTenantContextFromRequest({ headers: { authorization } });
+    if (authContext && (!tenantId || authContext.tenantId === tenantId)) {
+      return {
+        ...authContext,
+        userId: authContext.userId || userId,
+      };
+    }
+  }
+
+  if (!tenantId) {
+    return authContext
+      ? {
+          ...authContext,
+          userId: authContext.userId || userId,
+        }
+      : null;
+  }
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    include: {
+      tenantPlans: {
+        where: {
+          status: 'ACTIVE',
+          effectiveFrom: { lte: new Date() },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        orderBy: { effectiveFrom: 'desc' },
+        take: 1,
+      },
+    },
+  });
+
+  if (tenant && tenant.status === 'ACTIVE' && tenant.tenantPlans[0]) {
+    if (authContext && authContext.tenantId !== tenantId) {
+      console.warn(
+        `[ExportProfile] Tenant mismatch between JWT (${authContext.tenantId}) and session (${tenantId}); using session tenant context`,
+      );
+    }
+
+    return {
+      tenantId: tenant.id,
+      planId: tenant.tenantPlans[0].planId,
+      tenantStatus: tenant.status,
+      userId,
+    };
+  }
+
+  return null;
 }
 
 function buildResponsePayload(session: Awaited<ReturnType<typeof getSessionForUser>>) {
@@ -145,8 +207,13 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       return NextResponse.json(buildResponsePayload(session));
     }
 
+    const tenantContext = await resolveTenantContext(request, user.id, session.tenantId);
+    if (!tenantContext) {
+      return NextResponse.json({ error: 'Unable to resolve tenant context' }, { status: 400 });
+    }
+
     const extracted = await extractExportProfile({
-      headers: { Authorization: request.headers.get('authorization') || '' },
+      tenantContext,
       sessionId: session.id,
       fileBuffer,
       fileName,

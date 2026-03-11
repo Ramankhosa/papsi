@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { TaskCode } from '@prisma/client';
 
 import { llmGateway } from '@/lib/metering/gateway';
+import type { TenantContext } from '@/lib/metering';
 import { systemPromptTemplateService, TEMPLATE_KEYS } from '@/lib/services/system-prompt-template-service';
 import {
   buildExportProfileJsonSchemaText,
@@ -42,7 +43,8 @@ Output expectations:
 - sourceDescription should briefly describe what evidence you used.`;
 
 export interface ExtractExportProfileInput {
-  headers: Record<string, string>;
+  headers?: Record<string, string>;
+  tenantContext?: TenantContext | null;
   sessionId: string;
   fileBuffer?: Buffer | null;
   fileName?: string | null;
@@ -76,8 +78,11 @@ export async function extractExportProfile(
   );
 
   const prompt = buildExtractionPrompt(systemPrompt, source.preview, source.hints);
+  const llmRequestContext = input.tenantContext
+    ? { tenantContext: input.tenantContext }
+    : { headers: input.headers || {} };
   const llmResult = await llmGateway.executeLLMOperation(
-    { headers: input.headers },
+    llmRequestContext,
     {
       taskCode: TaskCode.LLM2_DRAFT,
       stageCode: EXPORT_EXTRACTION_STAGE_CODE,
@@ -108,7 +113,7 @@ export async function extractExportProfile(
   } catch (error) {
     const retryPrompt = `${prompt}\n\nYour previous response was invalid JSON. Return only a valid JSON object.`;
     const retryResult = await llmGateway.executeLLMOperation(
-      { headers: input.headers },
+      llmRequestContext,
       {
         taskCode: TaskCode.LLM2_DRAFT,
         stageCode: EXPORT_EXTRACTION_STAGE_CODE,

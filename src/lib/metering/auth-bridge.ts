@@ -2,8 +2,19 @@
 // Safely extracts tenant context without breaking existing auth
 
 import type { TenantContext } from './types'
-import { createIdentityService } from './identity'
 import { verifyJWT, JWTPayload } from '@/lib/auth'
+
+function getHeaderValue(headers: Record<string, string>, headerName: string): string | undefined {
+  const normalizedHeaderName = headerName.toLowerCase()
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === normalizedHeaderName) {
+      return value
+    }
+  }
+
+  return undefined
+}
 
 /**
  * Extract tenant context from existing JWT token
@@ -24,7 +35,7 @@ export async function extractTenantContextFromRequest(
     }
 
     // Extract JWT from Authorization header
-    const authHeader = request.headers['authorization']
+    const authHeader = getHeaderValue(request.headers, 'authorization')
     if (!authHeader?.startsWith('Bearer ')) {
       return null
     }

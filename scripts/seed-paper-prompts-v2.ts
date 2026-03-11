@@ -2293,11 +2293,14 @@ ${def.rubricChecks.map((check, index) => `${index + 1}. ${check}`).join('\n')}
 
 Grounding rules:
 - Review only what is present in the supplied manuscript context.
+- TARGET SECTION contains the full text for the active section only.
+- NEIGHBORING / SUPPORTING CONTEXT contains summary-only payloads for nearby sections, not verbatim neighboring section text.
 - Do not invent experiments, results, citations, figures, or literature.
 - Use rewrite_fixable only when a textual revision can address the issue without fabricating evidence.
 - Use evidence_fixable when new evidence, experiments, citations, or analyses are required.
 - Use manual_decision_required when author judgment or scientific judgment is needed.
 - Keep issues tied to this target section; cross-section concerns may be mentioned in relatedSections but should still be grounded here.
+- Do not treat neighboring-section summaries as full quotes; only use the fields that are explicitly present.
 - Use relatedFigureIds only from the provided section figure metadata.
 
 Return ONLY valid JSON with this exact shape:

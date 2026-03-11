@@ -41,6 +41,11 @@ type ReviewProgressState = {
   message: string
   totalSections?: number
   completedSections?: number
+  sectionKey?: string
+  sectionLabel?: string
+  activityType?: 'started' | 'completed'
+  concurrency?: number
+  at?: string
 }
 
 type IssueFilter = 'all' | 'critical' | 'major_plus' | 'rewrite' | 'manual'
@@ -87,12 +92,20 @@ function progressDetailText(progress: ReviewProgressState | null) {
 
   const total = progress.totalSections || 0
   const completed = progress.completedSections || 0
+  const concurrencyNote = progress.concurrency ? ` Up to ${progress.concurrency} sections can run in parallel.` : ''
+
+  if (progress.phase === 'summarize_context' && progress.activityType === 'started' && progress.sectionLabel) {
+    return `Preparing a reusable context brief for ${progress.sectionLabel}.${concurrencyNote}`
+  }
+  if (progress.phase === 'section_review' && progress.activityType === 'started' && progress.sectionLabel) {
+    return `Running the section-specific reviewer for ${progress.sectionLabel}.${concurrencyNote}`
+  }
 
   if (progress.phase === 'summarize_context' && total > 0) {
-    return `${completed} of ${total} neighboring-section context briefs prepared`
+    return `${completed} of ${total} neighboring-section context briefs prepared.${concurrencyNote}`
   }
   if (progress.phase === 'section_review' && total > 0) {
-    return `${completed} of ${total} sections reviewed with full-text target analysis`
+    return `${completed} of ${total} sections reviewed with full-text target analysis.${concurrencyNote}`
   }
   if (progress.phase === 'aggregate') {
     return 'Cross-section findings are being consolidated into one manuscript report'
@@ -111,6 +124,67 @@ function progressBadgeLabel(progress: ReviewProgressState | null) {
   if (progress.phase === 'aggregate') return 'Aggregating findings'
   if (progress.phase === 'persist') return 'Saving review'
   return 'Detailed review'
+}
+
+function buildLiveReviewActivity(progressLog: ReviewProgressState[]) {
+  const summarizingActive = new Map<string, string>()
+  const reviewingActive = new Map<string, string>()
+  const summarizedDone: string[] = []
+  const reviewedDone: string[] = []
+  const summarizedSeen = new Set<string>()
+  const reviewedSeen = new Set<string>()
+
+  for (const event of progressLog) {
+    const sectionId = event.sectionKey || event.sectionLabel
+    const sectionLabel = event.sectionLabel || event.sectionKey
+    if (!sectionId || !sectionLabel) continue
+
+    if (event.phase === 'summarize_context') {
+      if (event.activityType === 'started') {
+        summarizingActive.set(sectionId, sectionLabel)
+      }
+      if (event.activityType === 'completed') {
+        summarizingActive.delete(sectionId)
+        if (!summarizedSeen.has(sectionId)) {
+          summarizedSeen.add(sectionId)
+          summarizedDone.push(sectionLabel)
+        }
+      }
+    }
+
+    if (event.phase === 'section_review') {
+      if (event.activityType === 'started') {
+        reviewingActive.set(sectionId, sectionLabel)
+      }
+      if (event.activityType === 'completed') {
+        reviewingActive.delete(sectionId)
+        if (!reviewedSeen.has(sectionId)) {
+          reviewedSeen.add(sectionId)
+          reviewedDone.push(sectionLabel)
+        }
+      }
+    }
+  }
+
+  const recentEvents = progressLog
+    .filter(event => Boolean(event.message))
+    .slice(-8)
+    .reverse()
+
+  return {
+    summarizingActive: Array.from(summarizingActive.values()),
+    reviewingActive: Array.from(reviewingActive.values()),
+    summarizedDone: summarizedDone.slice(-6),
+    reviewedDone: reviewedDone.slice(-6),
+    recentEvents,
+  }
+}
+
+function formatProgressEventTime(timestamp?: string) {
+  if (!timestamp) return ''
+  const parsed = new Date(timestamp)
+  if (Number.isNaN(parsed.getTime())) return ''
+  return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 async function readSseStream(
@@ -203,6 +277,7 @@ export default function PaperReviewStage({
   const [error, setError] = useState<string | null>(null)
   const [selectedMode, setSelectedMode] = useState<PaperReviewMode>('quick')
   const [progress, setProgress] = useState<ReviewProgressState | null>(null)
+  const [progressLog, setProgressLog] = useState<ReviewProgressState[]>([])
   const [issueFilter, setIssueFilter] = useState<IssueFilter>('all')
   const abortControllerRef = useRef<AbortController | null>(null)
   const hasInitializedModeRef = useRef(false)
@@ -277,6 +352,7 @@ export default function PaperReviewStage({
     if (issueFilter === 'manual') return issues.filter(issue => issue.fixType !== 'rewrite_fixable')
     return issues
   }, [issueFilter, pendingIssues])
+  const liveReviewActivity = useMemo(() => buildLiveReviewActivity(progressLog), [progressLog])
 
   const jumpToSection = useCallback((sectionKey: string) => {
     onSectionSelect?.(sectionKey)
@@ -293,7 +369,13 @@ export default function PaperReviewStage({
     abortControllerRef.current = null
     setRunningReview(false)
     setProgress(null)
+    setProgressLog([])
     setError('Review run cancelled before completion.')
+  }, [])
+
+  const handleProgressStatus = useCallback((payload: ReviewProgressState) => {
+    setProgress(payload)
+    setProgressLog(prev => [...prev.slice(-59), payload])
   }, [])
 
   const runReview = useCallback(async () => {
@@ -303,6 +385,7 @@ export default function PaperReviewStage({
     abortControllerRef.current = controller
     setRunningReview(true)
     setError(null)
+    setProgressLog([])
     setProgress({ reviewMode: selectedMode, phase: 'prepare', message: 'Preparing the review workspace' })
     persistPaperReviewMode(sessionId, selectedMode)
     try {
@@ -326,7 +409,7 @@ export default function PaperReviewStage({
       }
       let reviewCompleted = true
       if ((response.headers.get('Content-Type') || '').includes('text/event-stream')) {
-        reviewCompleted = await readSseStream(response, payload => setProgress(payload), message => setError(message))
+        reviewCompleted = await readSseStream(response, handleProgressStatus, message => setError(message))
       } else {
         const data = await response.json()
         if (!data.success) throw new Error(data.error || 'Review generation failed')
@@ -344,7 +427,7 @@ export default function PaperReviewStage({
       abortControllerRef.current = null
       setRunningReview(false)
     }
-  }, [activeReview, authToken, loadSession, selectedMode, sessionId])
+  }, [activeReview, authToken, handleProgressStatus, loadSession, selectedMode, sessionId])
 
   if (loading) {
     return <div className="flex min-h-[280px] items-center justify-center text-slate-600"><Loader2 className="mr-3 h-5 w-5 animate-spin" />Loading review workspace...</div>
@@ -438,6 +521,63 @@ export default function PaperReviewStage({
           <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-100">
             <div className="h-full rounded-full bg-gradient-to-r from-slate-900 via-sky-700 to-emerald-600 transition-all duration-500" style={{ width: `${progressPercent(progress)}%` }} />
           </div>
+          {progress.reviewMode === 'section_by_section' && (
+            <>
+              <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Now Summarizing</div>
+                    {progress.concurrency ? <div className="text-xs text-slate-500">Concurrency {progress.concurrency}</div> : null}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {liveReviewActivity.summarizingActive.length > 0 ? liveReviewActivity.summarizingActive.map(label => (
+                      <span key={`summarizing-${label}`} className="rounded-full border border-sky-200 bg-white px-3 py-1 text-xs font-medium text-sky-700">
+                        {label}
+                      </span>
+                    )) : <span className="text-sm text-slate-500">Waiting for the next context-summary slot.</span>}
+                  </div>
+                  {liveReviewActivity.summarizedDone.length > 0 && (
+                    <div className="mt-3 text-xs text-slate-500">
+                      Completed: {liveReviewActivity.summarizedDone.join(', ')}
+                    </div>
+                  )}
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Now Reviewing</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {liveReviewActivity.reviewingActive.length > 0 ? liveReviewActivity.reviewingActive.map(label => (
+                      <span key={`reviewing-${label}`} className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-xs font-medium text-emerald-700">
+                        {label}
+                      </span>
+                    )) : <span className="text-sm text-slate-500">Waiting for the next section-review slot.</span>}
+                  </div>
+                  {liveReviewActivity.reviewedDone.length > 0 && (
+                    <div className="mt-3 text-xs text-slate-500">
+                      Reviewed: {liveReviewActivity.reviewedDone.join(', ')}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Backend Activity</div>
+                <div className="mt-3 max-h-48 space-y-2 overflow-y-auto pr-1">
+                  {liveReviewActivity.recentEvents.length > 0 ? liveReviewActivity.recentEvents.map((event, index) => (
+                    <div key={`${event.at || 'event'}-${event.phase}-${event.sectionKey || index}`} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                        {formatProgressEventTime(event.at) ? <span>{formatProgressEventTime(event.at)}</span> : null}
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-medium text-slate-600">
+                          {event.phase === 'summarize_context' ? 'Context summary' : event.phase === 'section_review' ? 'Section review' : event.phase}
+                        </span>
+                        {event.sectionLabel ? <span>{event.sectionLabel}</span> : null}
+                        {event.activityType ? <span className="uppercase tracking-[0.14em]">{event.activityType}</span> : null}
+                      </div>
+                      <div className="mt-1 text-sm text-slate-700">{event.message}</div>
+                    </div>
+                  )) : <div className="text-sm text-slate-500">Waiting for backend status events...</div>}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 

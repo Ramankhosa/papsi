@@ -3718,6 +3718,8 @@ type PaperReviewProgressEmitter = (payload: {
   completedSections?: number;
   sectionKey?: string;
   sectionLabel?: string;
+  activityType?: 'started' | 'completed';
+  concurrency?: number;
   reviewId?: string;
   reviewedAt?: string;
 }) => Promise<void> | void;
@@ -5432,6 +5434,133 @@ function extractJsonObjectFromModelOutput(output: string): any {
   }
 }
 
+function readReviewTokenNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function getPaperReviewResponseTotalTokens(response: {
+  outputTokens?: number | null;
+  metadata?: unknown;
+}): number {
+  const metadata = response.metadata && typeof response.metadata === 'object'
+    ? response.metadata as Record<string, unknown>
+    : {};
+  const tokenUsage = metadata.tokenUsage && typeof metadata.tokenUsage === 'object'
+    ? metadata.tokenUsage as Record<string, unknown>
+    : {};
+
+  const inputTokens = readReviewTokenNumber(tokenUsage.inputTokens) ?? readReviewTokenNumber(metadata.inputTokens) ?? 0;
+  const outputTokens = readReviewTokenNumber(tokenUsage.outputTokens)
+    ?? readReviewTokenNumber(metadata.outputTokens)
+    ?? readReviewTokenNumber(response.outputTokens)
+    ?? 0;
+
+  return readReviewTokenNumber(tokenUsage.totalTokens)
+    ?? readReviewTokenNumber(metadata.totalTokens)
+    ?? (inputTokens + outputTokens);
+}
+
+const PAPER_SECTION_REVIEW_CONCURRENCY = 10;
+const PAPER_SECTION_REVIEW_RETRY_DELAYS_MS = [800, 1600, 3200];
+
+type PaperReviewLLMOperationResult = Awaited<ReturnType<typeof llmGateway.executeLLMOperation>>;
+
+async function mapWithConcurrency<TItem, TResult>(
+  items: TItem[],
+  limit: number,
+  worker: (item: TItem, index: number) => Promise<TResult>
+): Promise<TResult[]> {
+  if (items.length === 0) return [];
+
+  const results = new Array<TResult>(items.length);
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  let cursor = 0;
+
+  const runners = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
+
+function getPaperReviewErrorCode(error: unknown): string {
+  if (error && typeof error === 'object' && typeof (error as Record<string, unknown>).code === 'string') {
+    return String((error as Record<string, unknown>).code);
+  }
+
+  return '';
+}
+
+function getPaperReviewErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object' && typeof (error as Record<string, unknown>).message === 'string') {
+    return String((error as Record<string, unknown>).message);
+  }
+
+  return '';
+}
+
+function isPaperReviewConcurrencyError(error: unknown): boolean {
+  const code = getPaperReviewErrorCode(error).trim().toUpperCase();
+  if (code === 'CONCURRENCY_LIMIT') return true;
+
+  const message = getPaperReviewErrorMessage(error).toLowerCase();
+  return message.includes('too many concurrent')
+    || message.includes('concurrency limit')
+    || message.includes('maximum 5 concurrent requests allowed')
+    || message.includes('maximum 10 concurrent requests allowed');
+}
+
+async function executePaperReviewLLMOperationWithRetry(params: {
+  requestHeaders: Record<string, string>;
+  operationLabel: string;
+  operationTarget?: string;
+  buildRequest: () => Promise<Parameters<typeof llmGateway.executeLLMOperation>[1]> | Parameters<typeof llmGateway.executeLLMOperation>[1];
+}): Promise<PaperReviewLLMOperationResult> {
+  const { requestHeaders, operationLabel, operationTarget, buildRequest } = params;
+
+  for (let attempt = 0; attempt <= PAPER_SECTION_REVIEW_RETRY_DELAYS_MS.length; attempt += 1) {
+    const result = await llmGateway.executeLLMOperation(
+      { headers: requestHeaders },
+      await buildRequest()
+    );
+
+    if (result.success && result.response) {
+      return result;
+    }
+
+    if (!isPaperReviewConcurrencyError(result.error) || attempt === PAPER_SECTION_REVIEW_RETRY_DELAYS_MS.length) {
+      return result;
+    }
+
+    const delayMs = PAPER_SECTION_REVIEW_RETRY_DELAYS_MS[attempt];
+    console.warn(
+      `[PaperReview] ${operationLabel}${operationTarget ? ` for ${operationTarget}` : ''} hit a concurrency limit. ` +
+      `Retrying in ${delayMs}ms (attempt ${attempt + 1}/${PAPER_SECTION_REVIEW_RETRY_DELAYS_MS.length + 1}).`
+    );
+    await sleep(delayMs);
+  }
+
+  throw new Error(`Paper review ${operationLabel} failed after retries`);
+}
+
 function buildPaperFixSummary(before: string, after: string): string {
   const beforeWords = computeWordCount(before);
   const afterWords = computeWordCount(after);
@@ -5802,7 +5931,7 @@ SECTION_CONTENT:
 async function buildDetailedSectionReviewPrompt(params: {
   reviewModel: Record<string, any>;
   section: Record<string, any>;
-  contextSections: Array<Record<string, any>>;
+  contextSections: PaperContextSectionSummary[];
   relevantFigures: Array<Record<string, any>>;
   relevantCitations: Array<Record<string, any>>;
 }): Promise<string> {
@@ -5811,6 +5940,43 @@ async function buildDetailedSectionReviewPrompt(params: {
     TEMPLATE_KEYS.PAPER_MANUSCRIPT_REVIEW_SECTION,
     normalizedSectionKey
   );
+
+  const targetSectionPayload = {
+    sectionId: String(params.section.sectionId || params.section.sectionKey || ''),
+    sectionKey: String(params.section.sectionKey || ''),
+    sectionType: String(params.section.sectionType || params.section.sectionKey || ''),
+    heading: String(params.section.heading || params.section.sectionLabel || ''),
+    sectionLabel: String(params.section.sectionLabel || params.section.heading || ''),
+    orderIndex: Number(params.section.orderIndex || 0),
+    wordCount: Number(params.section.wordCount || computeWordCount(String(params.section.bodyText || ''))),
+    contentMode: 'full_text_target_only',
+    citedReferenceIds: Array.isArray(params.section.citedReferenceIds) ? params.section.citedReferenceIds : [],
+    referencedFigureIds: Array.isArray(params.section.referencedFigureIds) ? params.section.referencedFigureIds : [],
+    bodyText: String(params.section.bodyText || '[Section currently empty]')
+  };
+
+  const contextSectionPayload = params.contextSections.map((sectionSummary) => ({
+    sectionKey: sectionSummary.sectionKey,
+    sectionLabel: sectionSummary.sectionLabel,
+    orderIndex: sectionSummary.orderIndex,
+    wordCount: sectionSummary.wordCount,
+    contentFingerprint: sectionSummary.contentFingerprint,
+    contextType: sectionSummary.contextType,
+    contentMode: sectionSummary.contentMode,
+    reviewerType: sectionSummary.reviewerType,
+    promptVariant: sectionSummary.promptVariant,
+    sectionRole: sectionSummary.sectionRole,
+    conciseSummary: sectionSummary.conciseSummary,
+    mainClaims: sectionSummary.mainClaims,
+    methodsOrApproach: sectionSummary.methodsOrApproach,
+    keyResults: sectionSummary.keyResults,
+    limitations: sectionSummary.limitations,
+    promisesOrDependencies: sectionSummary.promisesOrDependencies,
+    citedReferenceKeys: sectionSummary.citedReferenceKeys,
+    figureReferences: sectionSummary.figureReferences,
+    terminologyToKeep: sectionSummary.terminologyToKeep,
+    riskFlags: sectionSummary.riskFlags
+  }));
 
   return interpolatePaperReviewPrompt(template, {
     TARGET_SECTION_KEY: String(params.section.sectionKey || ''),
@@ -5825,8 +5991,8 @@ async function buildDetailedSectionReviewPrompt(params: {
       targetSectionContentMode: 'full_text',
       contextSectionContentMode: 'summary_only',
     }, null, 2),
-    TARGET_SECTION: JSON.stringify(params.section, null, 2),
-    CONTEXT_SECTIONS: JSON.stringify(params.contextSections, null, 2),
+    TARGET_SECTION: JSON.stringify(targetSectionPayload, null, 2),
+    CONTEXT_SECTIONS: JSON.stringify(contextSectionPayload, null, 2),
     RELEVANT_FIGURES: JSON.stringify(params.relevantFigures, null, 2),
     RELEVANT_CITATIONS: JSON.stringify(params.relevantCitations, null, 2)
   });
@@ -5892,23 +6058,40 @@ async function runSectionBySectionPaperReview(params: {
     reviewMode: 'section_by_section',
     phase: 'summarize_context',
     message: sections.length > 0
-      ? `Extracting reusable context briefs (0/${sections.length} complete)`
+      ? `Extracting reusable context briefs (0/${sections.length} complete, concurrency ${PAPER_SECTION_REVIEW_CONCURRENCY})`
       : 'No drafted sections available for section-by-section review',
     totalSections: sections.length,
     completedSections: 0,
+    concurrency: PAPER_SECTION_REVIEW_CONCURRENCY,
   });
 
-  const contextSummaryResults = await Promise.all(
-    sections.map(async (section: Record<string, any>, sectionIndex: number) => {
+  const contextSummaryResults = await mapWithConcurrency(
+    sections,
+    PAPER_SECTION_REVIEW_CONCURRENCY,
+    async (section: Record<string, any>, sectionIndex: number) => {
       const sectionKey = String(section.sectionKey || '');
       const sectionLabel = String(section.sectionLabel || section.heading || sectionKey);
       let summary = buildFallbackPaperContextSectionSummary(section);
       let tokensUsed = 0;
 
+      await emitProgress?.({
+        reviewMode: 'section_by_section',
+        phase: 'summarize_context',
+        message: `Summarizing neighboring context for ${sectionLabel}`,
+        totalSections: sections.length,
+        completedSections: completedContextSummaries,
+        sectionKey,
+        sectionLabel,
+        activityType: 'started',
+        concurrency: PAPER_SECTION_REVIEW_CONCURRENCY,
+      });
+
       try {
-        const result = await llmGateway.executeLLMOperation(
-          { headers: requestHeaders },
-          {
+        const result = await executePaperReviewLLMOperationWithRetry({
+          requestHeaders,
+          operationLabel: 'context summary extraction',
+          operationTarget: sectionKey,
+          buildRequest: async () => ({
             taskCode: 'LLM2_DRAFT' as const,
             stageCode: 'PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY',
             prompt: await buildPaperSectionContextSummaryPrompt({
@@ -5929,11 +6112,11 @@ async function runSectionBySectionPaperReview(params: {
               sectionKey,
               sectionIndex
             }
-          }
-        );
+          })
+        });
 
         if (result.success && result.response) {
-          tokensUsed = Number(result.response.outputTokens || 0);
+          tokensUsed = getPaperReviewResponseTotalTokens(result.response);
           const parsed = extractJsonObjectFromModelOutput(result.response.output || '');
           summary = normalizePaperContextSectionSummary(section, parsed);
         } else {
@@ -5952,13 +6135,15 @@ async function runSectionBySectionPaperReview(params: {
         completedSections: completedContextSummaries,
         sectionKey,
         sectionLabel,
+        activityType: 'completed',
+        concurrency: PAPER_SECTION_REVIEW_CONCURRENCY,
       });
 
       return {
         summary,
         tokensUsed
       };
-    })
+    }
   );
 
   const contextSummaryBySection = new Map(
@@ -5968,13 +6153,16 @@ async function runSectionBySectionPaperReview(params: {
   await emitProgress?.({
     reviewMode: 'section_by_section',
     phase: 'section_review',
-    message: `Running section reviewers (0/${sections.length} complete)`,
+    message: `Running section reviewers (0/${sections.length} complete, concurrency ${PAPER_SECTION_REVIEW_CONCURRENCY})`,
     totalSections: sections.length,
     completedSections: 0,
+    concurrency: PAPER_SECTION_REVIEW_CONCURRENCY,
   });
 
-  const sectionReviewerOutputs = await Promise.all(
-    sections.map(async (section: Record<string, any>, sectionIndex: number) => {
+  const sectionReviewerOutputs = await mapWithConcurrency(
+    sections,
+    PAPER_SECTION_REVIEW_CONCURRENCY,
+    async (section: Record<string, any>, sectionIndex: number) => {
       const sectionKey = String(section.sectionKey || '');
       const sectionLabel = String(section.sectionLabel || section.heading || sectionKey);
       const figureIdSet = new Set<string>(Array.isArray(section.referencedFigureIds) ? section.referencedFigureIds : []);
@@ -5997,9 +6185,23 @@ async function runSectionBySectionPaperReview(params: {
         .map((candidate: Record<string, any>) => contextSummaryBySection.get(String(candidate.sectionKey || '')))
         .filter((candidate): candidate is PaperContextSectionSummary => Boolean(candidate));
 
-      const result = await llmGateway.executeLLMOperation(
-        { headers: requestHeaders },
-        {
+      await emitProgress?.({
+        reviewMode: 'section_by_section',
+        phase: 'section_review',
+        message: `Reviewing ${sectionLabel} with section-specific rubric`,
+        totalSections: sections.length,
+        completedSections,
+        sectionKey,
+        sectionLabel,
+        activityType: 'started',
+        concurrency: PAPER_SECTION_REVIEW_CONCURRENCY,
+      });
+
+      const result = await executePaperReviewLLMOperationWithRetry({
+        requestHeaders,
+        operationLabel: 'section review',
+        operationTarget: sectionKey,
+        buildRequest: async () => ({
           taskCode: 'LLM2_DRAFT' as const,
           stageCode: 'PAPER_MANUSCRIPT_REVIEW',
           prompt: await buildDetailedSectionReviewPrompt({
@@ -6023,8 +6225,8 @@ async function runSectionBySectionPaperReview(params: {
             sectionKey,
             sectionIndex
           }
-        }
-      );
+        })
+      });
 
       if (!result.success || !result.response) {
         throw new Error(result.error?.message || `Failed to review section ${sectionKey}`);
@@ -6039,6 +6241,8 @@ async function runSectionBySectionPaperReview(params: {
         completedSections,
         sectionKey,
         sectionLabel,
+        activityType: 'completed',
+        concurrency: PAPER_SECTION_REVIEW_CONCURRENCY,
       });
 
       const parsed = extractJsonObjectFromModelOutput(result.response.output || '');
@@ -6063,9 +6267,9 @@ async function runSectionBySectionPaperReview(params: {
           issueIds: sectionIssues.map((issue: any) => issue.id)
         },
         issues: sectionIssues,
-        tokensUsed: result.response.outputTokens || 0
+        tokensUsed: getPaperReviewResponseTotalTokens(result.response)
       };
-    })
+    }
   );
 
   await emitProgress?.({
@@ -6074,11 +6278,13 @@ async function runSectionBySectionPaperReview(params: {
     message: 'Aggregating section findings into one manuscript report',
     totalSections: sections.length,
     completedSections: sections.length,
+    concurrency: PAPER_SECTION_REVIEW_CONCURRENCY,
   });
 
-  const aggregationResult = await llmGateway.executeLLMOperation(
-    { headers: requestHeaders },
-    {
+  const aggregationResult = await executePaperReviewLLMOperationWithRetry({
+    requestHeaders,
+    operationLabel: 'section review aggregation',
+    buildRequest: async () => ({
       taskCode: 'LLM2_DRAFT' as const,
       stageCode: 'PAPER_MANUSCRIPT_REVIEW',
       prompt: await buildPaperReviewAggregationPrompt({
@@ -6097,8 +6303,8 @@ async function runSectionBySectionPaperReview(params: {
         module: 'paper_review',
         purpose: 'paper_section_review_aggregation'
       }
-    }
-  );
+    })
+  });
 
   if (!aggregationResult.success || !aggregationResult.response) {
     throw new Error(aggregationResult.error?.message || 'Failed to aggregate section review');
@@ -6137,7 +6343,7 @@ async function runSectionBySectionPaperReview(params: {
   }, allIssues);
   const tokensUsed = contextSummaryResults.reduce((sum, output) => sum + Number(output.tokensUsed || 0), 0)
     + sectionReviewerOutputs.reduce((sum, output) => sum + Number(output.tokensUsed || 0), 0)
-    + Number(aggregationResult.response.outputTokens || 0);
+    + getPaperReviewResponseTotalTokens(aggregationResult.response);
 
   return {
     issues: allIssues,
@@ -6457,7 +6663,7 @@ async function executePaperManuscriptReview(params: {
       ...(parsed?.summary && typeof parsed.summary === 'object' ? parsed.summary : {}),
       generatedAt: reviewedAt
     }, issues);
-    tokensUsed = result.response.outputTokens;
+    tokensUsed = getPaperReviewResponseTotalTokens(result.response);
   }
 
   await emitProgress?.({
