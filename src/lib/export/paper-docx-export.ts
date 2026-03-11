@@ -7,7 +7,12 @@ export interface PaperDocxSection {
 export interface PaperDocxFigure {
   figureNo: number;
   title?: string;
+  caption?: string | null;
   description?: string | null;
+  asset?: {
+    fileName: string;
+    buffer: Buffer;
+  };
 }
 
 export interface PaperDocxFormatting {
@@ -40,6 +45,7 @@ export async function buildPaperDocxBuffer(input: PaperDocxExportInput): Promise
     Paragraph,
     HeadingLevel,
     TextRun,
+    ImageRun,
     AlignmentType,
     Footer,
     Header,
@@ -159,15 +165,34 @@ export async function buildPaperDocxBuffer(input: PaperDocxExportInput): Promise
     );
 
     input.figures.forEach(figure => {
+      const imageRun = buildFigureImageRun({
+        ImageRun,
+        asset: figure.asset,
+        availablePageWidthTwips: Math.round(pageSize.width * 20) - cmToTwips(margins.left) - cmToTwips(margins.right),
+      });
+      if (imageRun) {
+        appendixChildren.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [imageRun],
+          })
+        );
+      }
+
       const captionParts = [`Figure ${figure.figureNo}.`];
       if (figure.title) captionParts.push(figure.title);
-      if (figure.description) captionParts.push(figure.description);
+      if (figure.caption) {
+        captionParts.push(figure.caption);
+      } else if (figure.description) {
+        captionParts.push(figure.description);
+      }
       appendixChildren.push(
         new Paragraph({
           children: [new TextRun({ text: captionParts.join(' '), font: fontFamily, size: fontSizeHalfPt })],
           style: 'bodyStyle'
         })
       );
+      appendixChildren.push(new Paragraph({ text: '', style: 'bodyStyle' }));
     });
   }
 
@@ -305,6 +330,67 @@ function splitBibliography(bibliography: string): string[] {
     .split(/\n{2,}/)
     .map(entry => entry.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
+}
+
+function buildFigureImageRun(params: {
+  ImageRun: any;
+  asset?: { fileName: string; buffer: Buffer };
+  availablePageWidthTwips: number;
+}) {
+  if (!params.asset) {
+    return null;
+  }
+
+  const lowerName = params.asset.fileName.toLowerCase();
+  if (lowerName.endsWith('.svg')) {
+    return null;
+  }
+
+  let width = 480;
+  let height = 360;
+  const dimensions = getImageDimensions(params.asset.buffer);
+  if (dimensions?.width && dimensions?.height) {
+    width = dimensions.width;
+    height = dimensions.height;
+
+    const maxWidth = Math.max(240, Math.floor((params.availablePageWidthTwips / 1440) * 96));
+    if (width > maxWidth) {
+      const ratio = maxWidth / width;
+      width = maxWidth;
+      height = Math.max(1, Math.round(height * ratio));
+    }
+
+    const maxHeight = 640;
+    if (height > maxHeight) {
+      const ratio = maxHeight / height;
+      height = maxHeight;
+      width = Math.max(1, Math.round(width * ratio));
+    }
+  }
+
+  return new params.ImageRun({
+    data: params.asset.buffer,
+    transformation: { width, height },
+  });
+}
+
+function getImageDimensions(buffer: Buffer): { width: number; height: number } | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const req = eval('require') as (moduleName: string) => any;
+    const imageSize = req('image-size').default || req('image-size');
+    const dimensions = imageSize(buffer);
+    if (!dimensions?.width || !dimensions?.height) {
+      return null;
+    }
+
+    return {
+      width: Number(dimensions.width),
+      height: Number(dimensions.height),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function buildHeaderFooter(params: {

@@ -11,6 +11,13 @@ import { buildLatexExport, type LatexFormatting } from '@/lib/export/latex-expor
 import { buildPaperDocxBuffer, type PaperDocxFormatting } from '@/lib/export/paper-docx-export';
 import type { ExportProfile } from '@/lib/export/export-profile-schema';
 import { getPaperFigureImageCandidates } from '@/lib/figure-generation/paper-figure-image';
+import {
+  asPaperFigureMeta,
+  getPaperFigureCaption,
+  getPaperFigureSafeDescription,
+  getPaperFigureStoredImagePath,
+  isPaperFigureUsable,
+} from '@/lib/figure-generation/paper-figure-record';
 import { prisma } from '@/lib/prisma';
 import { citationService } from '@/lib/services/citation-service';
 import { citationStyleService, type CitationData } from '@/lib/services/citation-style-service';
@@ -450,20 +457,20 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       (session.figurePlans || [])
         .slice()
         .sort((left, right) => left.figureNo - right.figureNo)
+        .filter((figure) => {
+          const nodes = asPaperFigureMeta(figure.nodes);
+          return isPaperFigureUsable(nodes, getPaperFigureStoredImagePath(nodes));
+        })
         .map(async (figure) => {
-          const nodes = typeof figure.nodes === 'object' && figure.nodes !== null && !Array.isArray(figure.nodes)
-            ? figure.nodes as Record<string, unknown>
-            : {};
-          const rawImagePath = typeof nodes.imagePath === 'string' ? nodes.imagePath : '';
+          const nodes = asPaperFigureMeta(figure.nodes);
+          const rawImagePath = getPaperFigureStoredImagePath(nodes);
           const asset = rawImagePath ? await readFigureAsset(rawImagePath, figure.figureNo) : null;
-          const caption = typeof nodes.caption === 'string' && nodes.caption.trim()
-            ? nodes.caption.trim()
-            : figure.description || '';
+          const caption = getPaperFigureCaption(nodes, figure.description || '');
 
           return {
             figureNo: figure.figureNo,
             title: figure.title,
-            description: figure.description,
+            description: getPaperFigureSafeDescription(nodes, figure.description || ''),
             caption,
             asset,
           };
@@ -478,7 +485,8 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
         figures: figures.map((figure) => ({
           figureNo: figure.figureNo,
           title: figure.title,
-          description: figure.caption || figure.description,
+          caption: figure.caption || figure.description,
+          asset: figure.asset || undefined,
         })),
         formatting: docxFormatting,
       });

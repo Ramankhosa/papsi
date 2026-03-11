@@ -24,6 +24,13 @@ import {
   resolveThemeFromPreferences,
   resolveSketchStyleFromPreferences
 } from '@/lib/figure-generation/preferences';
+import {
+  asPaperFigureMeta,
+  getPaperFigureCaption,
+  getPaperFigureCaptionSeed,
+  getPaperFigureGenerationPrompt,
+  getPaperFigureImageVersion,
+} from '@/lib/figure-generation/paper-figure-record';
 import { generatePaperSketch } from '@/lib/figure-generation/paper-sketch-service';
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
 import { llmGateway } from '@/lib/metering/gateway';
@@ -33,6 +40,12 @@ import path from 'path';
 import crypto from 'crypto';
 
 export const runtime = 'nodejs';
+
+function asObjectRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
 
 const generateSchema = z.object({
   figureType: z.string(),
@@ -807,7 +820,9 @@ export async function POST(
 
     let result: FigureGenerationResult;
     let llmMetadata: { tokensUsed?: number; model?: string } = {};
-    const meta = (figurePlan.nodes as any) || {};
+    const meta = asPaperFigureMeta(figurePlan.nodes);
+    const persistedPrompt = getPaperFigureGenerationPrompt(meta, figurePlan.description || '');
+    const persistedCaption = getPaperFigureCaption(meta, figurePlan.description || '');
     let rendererDecisionMeta: { renderer: 'plantuml' | 'mermaid'; reason: string } | null = null;
     let finalDiagramRenderer: 'plantuml' | 'mermaid' | null = null;
     let mermaidRenderFailed = false;
@@ -1218,7 +1233,7 @@ export async function POST(
               requestHeaders,
               imagePath: sketchResult.imagePath,
               title: data.title,
-              caption: data.caption,
+              caption: data.caption || persistedCaption,
               category: data.category,
               figureType: data.figureType,
               suggestionMeta: sketchMeta
@@ -1227,12 +1242,20 @@ export async function POST(
             const latestPlan = await prisma.figurePlan.findUnique({
               where: { id: figureId }
             });
-            const latestNodes = (latestPlan?.nodes as any) || {};
+            const latestNodes = asPaperFigureMeta(latestPlan?.nodes);
+            const nextCaption = getPaperFigureCaption(latestNodes, latestPlan?.description || '')
+              || inferredImageMeta?.summary
+              || getPaperFigureCaptionSeed({
+                suggestionMeta: sketchMeta,
+                inferredImageMeta: inferredImageMeta ?? null
+              });
             await prisma.figurePlan.update({
               where: { id: figureId },
               data: {
+                ...(nextCaption ? { description: nextCaption } : {}),
                 nodes: {
                   ...latestNodes,
+                  caption: nextCaption || latestNodes.caption || '',
                   inferredImageMeta: inferredImageMeta ?? null
                 } as any
               }
@@ -1240,7 +1263,12 @@ export async function POST(
 
             return NextResponse.json({
               success: true,
-              imagePath: resolvePaperFigureImageUrl(sessionId, figureId, sketchResult.imagePath),
+              imagePath: resolvePaperFigureImageUrl(
+                sessionId,
+                figureId,
+                sketchResult.imagePath,
+                getPaperFigureImageVersion(latestNodes, sketchResult.imagePath)
+              ),
               format: 'png',
               fileSize: 0 // Sketch service doesn't return file size; client doesn't use it
             });
@@ -1285,16 +1313,30 @@ export async function POST(
     const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
     const imagePath = `/uploads/figures/${filename}`;
     const nowIso = new Date().toISOString();
+    const effectiveSuggestionMeta = asObjectRecord(data.suggestionMeta) || asObjectRecord(meta.suggestionMeta);
+    const captionHint = (data.caption || '').trim()
+      || persistedCaption
+      || getPaperFigureCaptionSeed({
+        suggestionMeta: effectiveSuggestionMeta
+      });
+    const nextGenerationPrompt = persistedPrompt
+      || (!data.modificationRequest ? (data.description || '').trim() : '');
     const inferredImageMeta = await inferFigureImageMetadata({
       requestHeaders,
       imageBase64: result.imageBase64,
       mimeType: format === 'svg' ? 'image/svg+xml' : format === 'jpg' || format === 'jpeg' ? 'image/jpeg' : 'image/png',
       title: data.title,
-      caption: data.caption,
+      caption: captionHint || null,
       category: data.category,
       figureType: data.figureType,
-      suggestionMeta: data.suggestionMeta || meta.suggestionMeta || null
+      suggestionMeta: effectiveSuggestionMeta
     });
+    const nextCaption = captionHint
+      || inferredImageMeta?.summary
+      || getPaperFigureCaptionSeed({
+        suggestionMeta: effectiveSuggestionMeta,
+        inferredImageMeta: inferredImageMeta ?? null
+      });
 
     // Update the figure plan with the generated image
     // NOTE: imagePath is stored in nodes JSON since the schema doesn't have a dedicated field
@@ -1316,8 +1358,11 @@ export async function POST(
     await prisma.figurePlan.update({
       where: { id: figureId },
       data: {
+        ...(nextCaption ? { description: nextCaption } : {}),
         nodes: {
           ...meta,
+          caption: nextCaption || meta.caption || '',
+          generationPrompt: nextGenerationPrompt || meta.generationPrompt || undefined,
           status: 'GENERATED',
           imagePath, // Store in nodes JSON
           source: result.provider || 'quickchart',
@@ -1327,7 +1372,7 @@ export async function POST(
           fileSize: buffer.length,
           inferredImageMeta: inferredImageMeta ?? null,
           appliedPreferences: normalizedPreferences,
-          suggestionMeta: data.suggestionMeta || meta.suggestionMeta || null,
+          suggestionMeta: effectiveSuggestionMeta,
           lastModificationRequest: data.modificationRequest || null,
           rendererDecision: rendererDecisionMeta?.renderer || meta.rendererDecision || null,
           rendererDecisionReason: rendererDecisionMeta?.reason || meta.rendererDecisionReason || null,
@@ -1345,7 +1390,7 @@ export async function POST(
             ? (plantUMLRenderError || null)
             : (finalDiagramRenderer === 'plantuml' ? null : (meta.lastPlantUMLRenderError || null)),
           revisionHistory: nextRevisionHistory
-        }
+        } as any
       }
     });
 
@@ -1353,7 +1398,7 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      imagePath: resolvePaperFigureImageUrl(sessionId, figureId, imagePath),
+      imagePath: resolvePaperFigureImageUrl(sessionId, figureId, imagePath, checksum),
       generatedCode: result.generatedCode,
       format,
       fileSize: buffer.length

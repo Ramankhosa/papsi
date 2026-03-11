@@ -20,6 +20,7 @@ import {
   type FigureSuggestionTransport,
   type FigureSuggestionTransportMeta
 } from '@/lib/figure-generation/suggestion-meta';
+import { getPaperFigureCaptionSeed } from '@/lib/figure-generation/paper-figure-record';
 import { 
   BarChart3, 
   LineChart, 
@@ -94,6 +95,7 @@ type FigurePlan = {
   figureNo: number;
   title: string;
   caption: string;
+  generationPrompt?: string;
   figureType: string;
   category: FigureCategory;
   notes?: string;
@@ -385,6 +387,8 @@ export default function PaperFigurePlannerStage({
   const [modificationRequest, setModificationRequest] = useState('');
   const [isModifying, setIsModifying] = useState(false);
   const [showModifyInput, setShowModifyInput] = useState(false);
+  const [editingCaption, setEditingCaption] = useState('');
+  const [isSavingCaption, setIsSavingCaption] = useState(false);
   
   // Sketch-specific state
   const [sketchUploadFile, setSketchUploadFile] = useState<File | null>(null);
@@ -408,6 +412,10 @@ export default function PaperFigurePlannerStage({
   const [generationFeedback, setGenerationFeedback] = useState<GenerationFeedback | null>(null);
   const [generationMessageIndex, setGenerationMessageIndex] = useState(0);
   const figureListEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setEditingCaption(previewFigure?.caption || '');
+  }, [previewFigure?.id, previewFigure?.caption]);
 
   const startCancelableRequest = useCallback((label: string, timeoutMs: number) => {
     const controller = new AbortController();
@@ -671,17 +679,20 @@ export default function PaperFigurePlannerStage({
 
   // Load figures
   const loadFigures = useCallback(async () => {
-    if (!authToken || !sessionId) return;
+    if (!authToken || !sessionId) return [];
     try {
-    const response = await fetch(`/api/papers/${sessionId}/figures`, {
-      cache: 'no-store',
-      headers: { Authorization: `Bearer ${authToken}` }
-    });
-    if (!response.ok) return;
-    const data = await response.json();
-    setFigures(data.figures || []);
+      const response = await fetch(`/api/papers/${sessionId}/figures`, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (!response.ok) return [];
+      const data = await response.json();
+      const nextFigures = data.figures || [];
+      setFigures(nextFigures);
+      return nextFigures as FigurePlan[];
     } catch (error) {
       console.error('Failed to load figures:', error);
+      return [];
     }
   }, [sessionId, authToken]);
 
@@ -763,6 +774,7 @@ export default function PaperFigurePlannerStage({
     const originSuggestionId = pendingSuggestionId;
     setIsCreating(true);
     try {
+      const initialCaption = getPaperFigureCaptionSeed({ suggestionMeta: pendingSuggestionMeta || null });
       const response = await fetch(`/api/papers/${sessionId}/figures`, {
         method: 'POST',
         headers: {
@@ -771,10 +783,11 @@ export default function PaperFigurePlannerStage({
         },
         body: JSON.stringify({
           title,
-          caption: description,
+          caption: initialCaption,
+          generationPrompt: description,
           figureType,
           category,
-          notes: description,
+          notes: '',
           figureNo: nextFigureNo,
           status: 'PLANNED',
           suggestionMeta: pendingSuggestionMeta || undefined
@@ -843,7 +856,7 @@ export default function PaperFigurePlannerStage({
           category: figure.category,
           title: figure.title,
           caption: figure.caption,
-          description: figure.notes || figure.caption,
+          description: figure.generationPrompt || figure.notes || figure.caption,
           theme: 'academic',
           preferences: normalizePrefs(),
           suggestionMeta: figure.suggestionMeta || undefined,
@@ -855,6 +868,12 @@ export default function PaperFigurePlannerStage({
       const data = await response.json();
       
       if (!response.ok) throw new Error(data.error);
+
+      const refreshedFigures = await loadFigures();
+      const refreshedFigure = refreshedFigures.find((entry) => entry.id === figure.id);
+      if (refreshedFigure) {
+        setPreviewFigure((prev) => (prev?.id === figure.id ? refreshedFigure : prev));
+      }
 
       setFigures(prev => prev.map(f => 
         f.id === figure.id 
@@ -1071,7 +1090,7 @@ export default function PaperFigurePlannerStage({
       } else {
         // Use regular generate endpoint for charts/diagrams
         const enhancedDescription = `
-Original request: ${figure.notes || figure.caption || figure.title}
+Original request: ${figure.generationPrompt || figure.notes || figure.caption || figure.title}
 
 User modification request: ${modificationRequest}
 
@@ -1103,6 +1122,12 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       const data = await response.json();
       
       if (!response.ok) throw new Error(data.error);
+
+      const refreshedFigures = await loadFigures();
+      const refreshedFigure = refreshedFigures.find((entry) => entry.id === figure.id);
+      if (refreshedFigure) {
+        setPreviewFigure((prev) => (prev?.id === figure.id ? refreshedFigure : prev));
+      }
 
       setFigures(prev => prev.map(f => 
         f.id === figure.id 
@@ -1148,6 +1173,58 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       finishCancelableRequest(requestState);
       setIsModifying(false);
       setGenerationFeedback(null);
+    }
+  };
+
+  const handleSaveCaption = async () => {
+    if (!authToken || !previewFigure) return;
+    const nextCaption = editingCaption.trim();
+    if (!nextCaption || nextCaption === previewFigure.caption) return;
+
+    setIsSavingCaption(true);
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/figures/${previewFigure.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ caption: nextCaption })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to update caption');
+      }
+
+      const updatedFigure = data.figure as FigurePlan | undefined;
+      if (updatedFigure) {
+        setFigures((prev) => prev.map((figure) => (
+          figure.id === updatedFigure.id ? { ...figure, ...updatedFigure } : figure
+        )));
+        setPreviewFigure(updatedFigure);
+        setEditingCaption(updatedFigure.caption || nextCaption);
+      } else {
+        const refreshedFigures = await loadFigures();
+        const refreshedFigure = refreshedFigures.find((figure) => figure.id === previewFigure.id);
+        if (refreshedFigure) {
+          setPreviewFigure(refreshedFigure);
+          setEditingCaption(refreshedFigure.caption || nextCaption);
+        }
+      }
+
+      showToast({
+        type: 'success',
+        title: 'Caption updated',
+        message: 'The figure caption was saved.'
+      });
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Caption update failed',
+        message: error instanceof Error ? error.message : 'Unexpected error'
+      });
+    } finally {
+      setIsSavingCaption(false);
     }
   };
 
@@ -2589,7 +2666,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
           setModificationRequest('');
         }
       }}>
-      <DialogContent className="max-w-4xl w-[95vw] max-h-[92vh] bg-white border-0 shadow-2xl rounded-2xl flex flex-col overflow-hidden">
+        <DialogContent className="max-w-4xl w-[95vw] max-h-[92vh] bg-white border-0 shadow-2xl rounded-2xl flex flex-col overflow-hidden">
           <DialogHeader className="pb-4 flex-shrink-0">
             <DialogTitle className="flex items-center gap-3 text-xl">
               <span>Figure {previewFigure?.figureNo}: {previewFigure?.title}</span>
@@ -2604,7 +2681,27 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                 </Badge>
               )}
             </DialogTitle>
-            <p className="text-slate-500 text-sm mt-1">{previewFigure?.caption}</p>
+            <div className="mt-3 flex flex-col gap-2">
+              <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                Caption
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  value={editingCaption}
+                  onChange={(event) => setEditingCaption(event.target.value)}
+                  placeholder="Add an academic caption"
+                  className="rounded-xl border-slate-200"
+                />
+                <Button
+                  variant="outline"
+                  onClick={handleSaveCaption}
+                  disabled={isSavingCaption || !editingCaption.trim() || editingCaption.trim() === (previewFigure?.caption || '')}
+                  className="rounded-xl"
+                >
+                  {isSavingCaption ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+                </Button>
+              </div>
+            </div>
           </DialogHeader>
 
           <div className="flex-1 overflow-y-auto space-y-4 pr-1">

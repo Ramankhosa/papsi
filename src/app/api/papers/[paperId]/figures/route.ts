@@ -3,6 +3,17 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
+import {
+  asPaperFigureMeta,
+  getPaperFigureCaption,
+  getPaperFigureCaptionSeed,
+  getPaperFigureGenerationPrompt,
+  getPaperFigureImageVersion,
+  getPaperFigureSafeDescription,
+  getPaperFigureStatus,
+  getPaperFigureStoredImagePath,
+  isPaperFigureDeleted,
+} from '@/lib/figure-generation/paper-figure-record';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,6 +22,7 @@ export const revalidate = 0;
 const createSchema = z.object({
   title: z.string().min(1),
   caption: z.string().optional().default(''),
+  generationPrompt: z.string().optional().default(''),
   figureType: z.string().min(1),
   category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATED_FIGURE', 'ILLUSTRATION', 'SKETCH', 'CUSTOM']).optional(),
   notes: z.string().optional(),
@@ -161,19 +173,11 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
 }
 
 function toResponse(plan: any) {
-  const meta = typeof plan.nodes === 'object' && plan.nodes !== null ? plan.nodes : {};
-  
-  // Image path is stored in nodes JSON (not a separate field)
-  const rawImagePath = meta.imagePath || null;
-  const imagePath = resolvePaperFigureImageUrl(plan.sessionId, plan.id, rawImagePath);
-  
-  // Determine status based on whether image exists or explicit status
-  let status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED' = 'PLANNED';
-  if (meta.status) {
-    status = meta.status;
-  } else if (imagePath) {
-    status = 'GENERATED';
-  }
+  const meta = asPaperFigureMeta(plan.nodes);
+  const rawImagePath = getPaperFigureStoredImagePath(meta);
+  const imageVersion = getPaperFigureImageVersion(meta, rawImagePath);
+  const imagePath = resolvePaperFigureImageUrl(plan.sessionId, plan.id, rawImagePath, imageVersion);
+  const status = getPaperFigureStatus(meta, rawImagePath);
   
   // Map figureType to category
   const typeToCategory: Record<string, string> = {
@@ -202,15 +206,22 @@ function toResponse(plan: any) {
     'custom': 'CUSTOM'
   };
   
-  const figureType = meta.figureType || 'flowchart';
-  const category = meta.category || typeToCategory[figureType] || 'DIAGRAM';
+  const figureType = typeof meta.figureType === 'string' && meta.figureType.trim()
+    ? meta.figureType.trim()
+    : 'flowchart';
+  const category = typeof meta.category === 'string' && meta.category.trim()
+    ? meta.category.trim()
+    : typeToCategory[figureType] || 'DIAGRAM';
+  const caption = getPaperFigureCaption(meta, plan.description || '');
+  const generationPrompt = getPaperFigureGenerationPrompt(meta, plan.description || '');
   
   return {
     id: plan.id,
     figureNo: plan.figureNo,
     title: plan.title,
-    caption: meta.caption || plan.description || '',
-    description: plan.description || '',
+    caption,
+    description: getPaperFigureSafeDescription(meta, plan.description || ''),
+    generationPrompt,
     figureType,
     category,
     notes: meta.notes || '',
@@ -243,10 +254,8 @@ export async function GET(request: NextRequest, context: { params: Promise<{ pap
 
     // Backward-compatible guard for any legacy soft-delete markers in nodes JSON.
     const visiblePlans = plans.filter((plan: any) => {
-      const meta = typeof plan.nodes === 'object' && plan.nodes !== null && !Array.isArray(plan.nodes)
-        ? plan.nodes as Record<string, unknown>
-        : {};
-      return meta.isDeleted !== true && meta.deleted !== true && meta.status !== 'DELETED';
+      const meta = asPaperFigureMeta(plan.nodes);
+      return !isPaperFigureDeleted(meta);
     });
 
     return NextResponse.json(
@@ -287,11 +296,15 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pa
       orderBy: { figureNo: 'desc' }
     });
     const nextFigureNo = data.figureNo || (latest?.figureNo || 0) + 1;
-    
+    const initialCaption = data.caption.trim() || getPaperFigureCaptionSeed({
+      suggestionMeta: data.suggestionMeta || null
+    });
+
     const meta = {
       figureType: data.figureType,
       category: data.category || 'DIAGRAM',
-      caption: data.caption || '',
+      caption: initialCaption,
+      generationPrompt: data.generationPrompt.trim() || undefined,
       notes: data.notes || '',
       status: data.status || 'PLANNED',
       suggestionMeta: data.suggestionMeta || null
@@ -302,7 +315,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pa
         sessionId,
         figureNo: nextFigureNo,
         title: data.title,
-        description: data.caption || '',
+        description: initialCaption || '',
         nodes: meta,
         edges: []
       }

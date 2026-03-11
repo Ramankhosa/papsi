@@ -8,6 +8,12 @@ import {
   resolveSketchStyleFromPreferences,
   type FigureSuggestionPreferences
 } from '@/lib/figure-generation/preferences';
+import {
+  asPaperFigureMeta,
+  getPaperFigureCaption,
+  getPaperFigureCaptionSeed,
+  getPaperFigureGenerationPrompt,
+} from '@/lib/figure-generation/paper-figure-record';
 
 export const runtime = 'nodejs';
 
@@ -171,9 +177,25 @@ type BatchTask =
       sketchPrompt?: string;
       illustrationSpec?: Record<string, unknown>;
       illustrationSpecV2?: Record<string, unknown>;
-      figureGenre?: 'METHOD_BLOCK' | 'SCENARIO_STORYBOARD' | 'CONCEPTUAL_FRAMEWORK' | 'GRAPHICAL_ABSTRACT';
+      figureGenre?: string;
       renderDirectives?: Record<string, unknown>;
     };
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function asSketchStyle(value: unknown): 'academic' | 'scientific' | 'conceptual' | 'technical' | undefined {
+  return value === 'academic' || value === 'scientific' || value === 'conceptual' || value === 'technical'
+    ? value
+    : undefined;
+}
 
 function inferFigureType(
   category?: string,
@@ -300,26 +322,29 @@ export async function POST(
           continue;
         }
 
-        const nodes = (figure.nodes as any) || {};
-        const category = inferCategory(nodes.category, nodes.figureType);
-        const figureType = inferFigureType(category, nodes.figureType);
-        const caption = nodes.caption || figure.description || '';
-        const description = nodes.notes || caption || figure.title;
+        const nodes = asPaperFigureMeta(figure.nodes);
+        const category = inferCategory(asString(nodes.category), asString(nodes.figureType));
+        const figureType = inferFigureType(category, asString(nodes.figureType));
+        const caption = getPaperFigureCaption(nodes, figure.description || '');
+        const description = getPaperFigureGenerationPrompt(nodes, figure.description || '') || figure.title;
 
         if (isSketchFigure(category, figureType)) {
-          const sketchMeta = nodes.suggestionMeta || {};
+          const sketchMeta = asObject(nodes.suggestionMeta);
+          const sketchMetaV2 = asObject(sketchMeta?.illustrationSpecV2);
+          const renderSpec = asObject(sketchMeta?.renderSpec);
+          const renderSpecV2 = asObject(renderSpec?.illustrationSpecV2);
           tasks.push({
             type: 'sketch',
             figureId: figure.id,
             title: figure.title,
             description,
             mode: getSketchMode(figureType),
-            sketchStyle: sketchMeta.sketchStyle || nodes.sketchStyle || undefined,
-            sketchPrompt: sketchMeta.sketchPrompt || undefined,
-            illustrationSpec: sketchMeta.illustrationSpec || undefined,
-            illustrationSpecV2: sketchMeta.illustrationSpecV2 || sketchMeta.renderSpec?.illustrationSpecV2 || undefined,
-            figureGenre: sketchMeta.figureGenre || sketchMeta.illustrationSpecV2?.figureGenre || undefined,
-            renderDirectives: sketchMeta.renderDirectives || sketchMeta.illustrationSpecV2?.renderDirectives || undefined
+            sketchStyle: asSketchStyle(sketchMeta?.sketchStyle) || asSketchStyle(nodes.sketchStyle),
+            sketchPrompt: asString(sketchMeta?.sketchPrompt),
+            illustrationSpec: asObject(sketchMeta?.illustrationSpec),
+            illustrationSpecV2: sketchMetaV2 || renderSpecV2,
+            figureGenre: asString(sketchMeta?.figureGenre) || asString(sketchMetaV2?.figureGenre),
+            renderDirectives: asObject(sketchMeta?.renderDirectives) || asObject(sketchMetaV2?.renderDirectives)
           });
           continue;
         }
@@ -332,7 +357,7 @@ export async function POST(
           description,
           figureType,
           category,
-          suggestionMeta: nodes.suggestionMeta || undefined
+          suggestionMeta: asObject(nodes.suggestionMeta)
         });
       }
     }
@@ -347,7 +372,13 @@ export async function POST(
       for (const suggestion of payload.suggestions || []) {
         const category = inferCategory(suggestion.category, suggestion.suggestedType);
         const figureType = inferFigureType(category, suggestion.suggestedType);
-        const description = (suggestion.description || '').trim() || suggestion.title;
+        const generationPrompt = (suggestion.description || '').trim() || suggestion.title;
+        const initialCaption = getPaperFigureCaptionSeed({
+          suggestionMeta: {
+            illustrationSpec: suggestion.illustrationSpec || null,
+            illustrationSpecV2: suggestion.illustrationSpecV2 || null,
+          },
+        });
 
         if (isSketchFigure(category, figureType)) {
           // Persist a figurePlan record before generating so the sketch has an ID
@@ -355,8 +386,9 @@ export async function POST(
             status: 'PLANNED',
             category: 'ILLUSTRATED_FIGURE',
             figureType,
-            caption: description,
-            notes: description,
+            caption: initialCaption,
+            generationPrompt,
+            notes: '',
             relevantSection: suggestion.relevantSection || null,
             figureRole: (suggestion as any).figureRole || null,
             sectionFitJustification: (suggestion as any).sectionFitJustification || null,
@@ -389,7 +421,7 @@ export async function POST(
               sessionId,
               figureNo: nextFigureNo,
               title: suggestion.title,
-              description,
+              description: initialCaption,
               nodes: sketchNodePayload as any,
               edges: []
             }
@@ -400,7 +432,7 @@ export async function POST(
             type: 'sketch',
             figureId: createdSketch.id,
             title: suggestion.title,
-            description,
+            description: generationPrompt,
             mode: getSketchMode(figureType),
             sketchStyle: (suggestion as any).sketchStyle || undefined,
             sketchPrompt: (suggestion as any).sketchPrompt || undefined,
@@ -416,8 +448,9 @@ export async function POST(
           status: 'PLANNED',
           category,
           figureType,
-          caption: description,
-          notes: description,
+          caption: initialCaption,
+          generationPrompt,
+          notes: '',
           relevantSection: suggestion.relevantSection || null,
           figureRole: (suggestion as any).figureRole || null,
           sectionFitJustification: (suggestion as any).sectionFitJustification || null,
@@ -449,7 +482,7 @@ export async function POST(
             sessionId,
             figureNo: nextFigureNo,
             title: suggestion.title,
-            description,
+            description: initialCaption,
             nodes: nodePayload as any,
             edges: []
           }
@@ -460,8 +493,8 @@ export async function POST(
           type: 'figure',
           figureId: created.id,
           title: created.title,
-          caption: description,
-          description,
+          caption: initialCaption,
+          description: generationPrompt,
           figureType,
           category,
           suggestionMeta: {

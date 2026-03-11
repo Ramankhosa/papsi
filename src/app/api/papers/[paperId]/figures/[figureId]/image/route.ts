@@ -4,15 +4,21 @@ import fs from 'fs/promises';
 import { prisma } from '@/lib/prisma';
 import {
   getImageContentType,
-  getPaperFigureImageCandidates
+  getPaperFigureImageCandidates,
+  verifyPaperFigureImageAccessToken
 } from '@/lib/figure-generation/paper-figure-image';
+import {
+  asPaperFigureMeta,
+  getPaperFigureImageVersion,
+  getPaperFigureStoredImagePath
+} from '@/lib/figure-generation/paper-figure-record';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ paperId: string; figureId: string }> }
 ) {
   const { paperId: sessionId, figureId } = await context.params;
@@ -26,13 +32,18 @@ export async function GET(
     return NextResponse.json({ error: 'Figure not found' }, { status: 404 });
   }
 
-  const nodes = typeof figure.nodes === 'object' && figure.nodes !== null && !Array.isArray(figure.nodes)
-    ? figure.nodes as Record<string, unknown>
-    : {};
-  const rawImagePath = typeof nodes.imagePath === 'string' ? nodes.imagePath : null;
+  const nodes = asPaperFigureMeta(figure.nodes);
+  const rawImagePath = getPaperFigureStoredImagePath(nodes);
 
   if (!rawImagePath) {
     return NextResponse.json({ error: 'Figure image not found' }, { status: 404 });
+  }
+
+  const version = getPaperFigureImageVersion(nodes, rawImagePath);
+  const url = new URL(request.url);
+  const token = url.searchParams.get('token');
+  if (!verifyPaperFigureImageAccessToken({ token, sessionId, figureId, version })) {
+    return NextResponse.json({ error: 'Unauthorized figure image access' }, { status: 401 });
   }
 
   const candidates = getPaperFigureImageCandidates(rawImagePath);
@@ -43,7 +54,7 @@ export async function GET(
       return new NextResponse(buffer as BodyInit, {
         headers: {
           'Content-Type': getImageContentType(candidate),
-          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Cache-Control': 'private, max-age=3600, immutable',
           'Content-Disposition': 'inline'
         }
       });

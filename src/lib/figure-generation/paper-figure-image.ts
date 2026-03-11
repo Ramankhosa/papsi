@@ -1,9 +1,105 @@
+import crypto from 'crypto';
 import path from 'path';
+
+const PAPER_FIGURE_IMAGE_SECRET = process.env.JWT_SECRET || 'your-super-secure-jwt-secret-change-in-production-min-32-chars';
+const PAPER_FIGURE_IMAGE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+
+function cleanString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function encodeBase64Url(value: Buffer): string {
+  return value.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function buildPaperFigureImageTokenPayload(params: {
+  sessionId: string;
+  figureId: string;
+  version?: string | null;
+  expiresAt: number;
+}): string {
+  const version = cleanString(params.version);
+  return [
+    params.sessionId,
+    params.figureId,
+    version,
+    String(params.expiresAt),
+  ].join(':');
+}
+
+function signPaperFigureImageToken(payload: string): string {
+  return encodeBase64Url(
+    crypto.createHmac('sha256', PAPER_FIGURE_IMAGE_SECRET).update(payload).digest()
+  );
+}
+
+export function createPaperFigureImageAccessToken(params: {
+  sessionId: string;
+  figureId: string;
+  version?: string | null;
+  now?: number;
+}): string {
+  const issuedAt = Number.isFinite(params.now) ? Number(params.now) : Date.now();
+  const expiresAt = issuedAt + PAPER_FIGURE_IMAGE_TTL_MS;
+  const payload = buildPaperFigureImageTokenPayload({
+    sessionId: params.sessionId,
+    figureId: params.figureId,
+    version: params.version,
+    expiresAt,
+  });
+  const signature = signPaperFigureImageToken(payload);
+  return `${expiresAt}.${signature}`;
+}
+
+export function verifyPaperFigureImageAccessToken(params: {
+  token?: string | null;
+  sessionId: string;
+  figureId: string;
+  version?: string | null;
+  now?: number;
+}): boolean {
+  const token = cleanString(params.token);
+  if (!token) {
+    return false;
+  }
+
+  const parts = token.split('.');
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const expiresAt = Number(parts[0]);
+  if (!Number.isFinite(expiresAt)) {
+    return false;
+  }
+
+  const now = Number.isFinite(params.now) ? Number(params.now) : Date.now();
+  if (expiresAt < now) {
+    return false;
+  }
+
+  const payload = buildPaperFigureImageTokenPayload({
+    sessionId: params.sessionId,
+    figureId: params.figureId,
+    version: params.version,
+    expiresAt,
+  });
+  const expectedSignature = signPaperFigureImageToken(payload);
+  if (parts[1].length !== expectedSignature.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(
+    Buffer.from(parts[1], 'utf8'),
+    Buffer.from(expectedSignature, 'utf8')
+  );
+}
 
 export function resolvePaperFigureImageUrl(
   sessionId: string,
   figureId: string,
-  imagePath?: string | null
+  imagePath?: string | null,
+  version?: string | null
 ): string | null {
   if (!imagePath) {
     return null;
@@ -22,7 +118,18 @@ export function resolvePaperFigureImageUrl(
     return trimmed;
   }
 
-  return `/api/papers/${encodeURIComponent(sessionId)}/figures/${encodeURIComponent(figureId)}/image`;
+  const normalizedVersion = cleanString(version) || trimmed;
+  const token = createPaperFigureImageAccessToken({
+    sessionId,
+    figureId,
+    version: normalizedVersion,
+  });
+  const params = new URLSearchParams({
+    token,
+    v: normalizedVersion,
+  });
+
+  return `/api/papers/${encodeURIComponent(sessionId)}/figures/${encodeURIComponent(figureId)}/image?${params.toString()}`;
 }
 
 export function getPaperFigureImageCandidates(imagePath?: string | null): string[] {

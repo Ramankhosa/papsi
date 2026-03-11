@@ -24,6 +24,15 @@ import { rhetoricalComposerService } from '@/lib/services/rhetorical-composer-se
 import { systemPromptTemplateService, TEMPLATE_KEYS } from '@/lib/services/system-prompt-template-service';
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
 import {
+  asPaperFigureMeta,
+  getPaperFigureCaption,
+  getPaperFigureSafeDescription,
+  getPaperFigureStatus,
+  getPaperFigureStoredImagePath,
+  isPaperFigureDeleted,
+  isPaperFigureUsable,
+} from '@/lib/figure-generation/paper-figure-record';
+import {
   normalizePaperReviewIssue,
   normalizePaperReviewRecord,
   normalizePaperReviewSummary,
@@ -2514,23 +2523,27 @@ async function loadFigurePromptContext(params: {
 
   const figures = plans
     .map<FigurePromptEntry | null>((plan) => {
-      const meta = asRecord(plan.nodes);
-      if (meta.isDeleted === true || meta.deleted === true || meta.status === 'DELETED') {
+      const meta = asPaperFigureMeta(plan.nodes);
+      const rawImagePath = getPaperFigureStoredImagePath(meta);
+      if (isPaperFigureDeleted(meta) || !isPaperFigureUsable(meta, rawImagePath)) {
         return null;
       }
 
       const suggestionMeta = asRecord(meta.suggestionMeta);
+      const imageVersion = cleanPromptFigureText(meta.checksum, 80)
+        || cleanPromptFigureText(meta.generatedAt, 40)
+        || rawImagePath;
       return {
         id: plan.id,
         figureNo: Number(plan.figureNo),
         title: cleanPromptFigureText(plan.title, 140) || `Figure ${plan.figureNo}`,
-        caption: cleanPromptFigureText(meta.caption || plan.description, 220),
-        description: cleanPromptFigureText(plan.description, 220),
+        caption: cleanPromptFigureText(getPaperFigureCaption(meta, plan.description || ''), 220),
+        description: cleanPromptFigureText(getPaperFigureSafeDescription(meta, plan.description || ''), 220),
         notes: cleanPromptFigureText(meta.notes, 220),
         category: cleanPromptFigureText(meta.category, 40),
         figureType: cleanPromptFigureText(meta.figureType, 40),
-        status: cleanPromptFigureText(meta.status, 40),
-        imagePath: resolvePaperFigureImageUrl(params.sessionId, plan.id, cleanPromptFigureText(meta.imagePath, 180)) || undefined,
+        status: cleanPromptFigureText(getPaperFigureStatus(meta, rawImagePath), 40),
+        imagePath: resolvePaperFigureImageUrl(params.sessionId, plan.id, rawImagePath, imageVersion) || undefined,
         relevantSection: cleanPromptFigureText(suggestionMeta.relevantSection, 40),
         figureRole: cleanPromptFigureText(suggestionMeta.figureRole, 40),
         whyThisFigure: cleanPromptFigureText(suggestionMeta.whyThisFigure, 220),
@@ -5384,23 +5397,27 @@ async function loadPaperReviewFigureEntries(sessionId: string): Promise<FigurePr
 
   return plans
     .map<FigurePromptEntry | null>((plan) => {
-      const meta = asRecord(plan.nodes);
-      if (meta.isDeleted === true || meta.deleted === true || meta.status === 'DELETED') {
+      const meta = asPaperFigureMeta(plan.nodes);
+      const rawImagePath = getPaperFigureStoredImagePath(meta);
+      if (isPaperFigureDeleted(meta) || !isPaperFigureUsable(meta, rawImagePath)) {
         return null;
       }
 
       const suggestionMeta = asRecord(meta.suggestionMeta);
+      const imageVersion = cleanPromptFigureText(meta.checksum, 80)
+        || cleanPromptFigureText(meta.generatedAt, 40)
+        || rawImagePath;
       return {
         id: plan.id,
         figureNo: Number(plan.figureNo),
         title: cleanPromptFigureText(plan.title, 140) || `Figure ${plan.figureNo}`,
-        caption: cleanPromptFigureText(meta.caption || plan.description, 220),
-        description: cleanPromptFigureText(plan.description, 220),
+        caption: cleanPromptFigureText(getPaperFigureCaption(meta, plan.description || ''), 220),
+        description: cleanPromptFigureText(getPaperFigureSafeDescription(meta, plan.description || ''), 220),
         notes: cleanPromptFigureText(meta.notes, 220),
         category: cleanPromptFigureText(meta.category, 40),
         figureType: cleanPromptFigureText(meta.figureType, 40),
-        status: cleanPromptFigureText(meta.status, 40),
-        imagePath: resolvePaperFigureImageUrl(sessionId, plan.id, cleanPromptFigureText(meta.imagePath, 180)) || undefined,
+        status: cleanPromptFigureText(getPaperFigureStatus(meta, rawImagePath), 40),
+        imagePath: resolvePaperFigureImageUrl(sessionId, plan.id, rawImagePath, imageVersion) || undefined,
         relevantSection: cleanPromptFigureText(suggestionMeta.relevantSection, 40),
         figureRole: cleanPromptFigureText(suggestionMeta.figureRole, 40),
         whyThisFigure: cleanPromptFigureText(suggestionMeta.whyThisFigure, 220),

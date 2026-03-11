@@ -3,6 +3,15 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
+import {
+  asPaperFigureMeta,
+  getPaperFigureCaption,
+  getPaperFigureGenerationPrompt,
+  getPaperFigureImageVersion,
+  getPaperFigureSafeDescription,
+  getPaperFigureStatus,
+  getPaperFigureStoredImagePath,
+} from '@/lib/figure-generation/paper-figure-record';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -11,6 +20,7 @@ export const runtime = 'nodejs';
 const updateSchema = z.object({
   title: z.string().min(1).optional(),
   caption: z.string().min(1).optional(),
+  generationPrompt: z.string().optional(),
   figureType: z.string().min(1).optional(),
   notes: z.string().optional()
 });
@@ -26,28 +36,28 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
 }
 
 function toResponse(plan: any) {
-  const meta = typeof plan.nodes === 'object' && plan.nodes !== null ? plan.nodes : {};
+  const meta = asPaperFigureMeta(plan.nodes);
+  const rawImagePath = getPaperFigureStoredImagePath(meta);
+  const imageVersion = getPaperFigureImageVersion(meta, rawImagePath);
+  const imagePath = resolvePaperFigureImageUrl(plan.sessionId, plan.id, rawImagePath, imageVersion);
+  const status = getPaperFigureStatus(meta, rawImagePath);
   
-  // Image path is stored in nodes JSON (not a separate field)
-  const rawImagePath = meta.imagePath || null;
-  const imagePath = resolvePaperFigureImageUrl(plan.sessionId, plan.id, rawImagePath);
-  
-  // Determine status based on whether image exists or explicit status
-  let status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED' = 'PLANNED';
-  if (meta.status) {
-    status = meta.status;
-  } else if (imagePath) {
-    status = 'GENERATED';
-  }
-  
-  const figureType = meta.figureType || 'flowchart';
-  const category = meta.category || 'DIAGRAM';
+  const figureType = typeof meta.figureType === 'string' && meta.figureType.trim()
+    ? meta.figureType.trim()
+    : 'flowchart';
+  const category = typeof meta.category === 'string' && meta.category.trim()
+    ? meta.category.trim()
+    : 'DIAGRAM';
+  const caption = getPaperFigureCaption(meta, plan.description || '');
+  const generationPrompt = getPaperFigureGenerationPrompt(meta, plan.description || '');
   
   return {
     id: plan.id,
     figureNo: plan.figureNo,
     title: plan.title,
-    caption: meta.caption || plan.description || '',
+    caption,
+    description: getPaperFigureSafeDescription(meta, plan.description || ''),
+    generationPrompt,
     figureType,
     category,
     notes: meta.notes || '',
@@ -87,11 +97,12 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ pap
       return NextResponse.json({ error: 'Figure not found' }, { status: 404 });
     }
 
-    const meta = typeof existing.nodes === 'object' && existing.nodes !== null && !Array.isArray(existing.nodes) ? existing.nodes as Record<string, unknown> : {};
+    const meta = asPaperFigureMeta(existing.nodes);
     const nextMeta = {
       ...meta,
       figureType: data.figureType ?? meta.figureType,
       caption: data.caption ?? meta.caption,
+      generationPrompt: data.generationPrompt ?? meta.generationPrompt,
       notes: data.notes ?? meta.notes
     };
 
@@ -99,7 +110,6 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ pap
       where: { id: figureId },
       data: {
         title: data.title ?? existing.title,
-        description: data.caption ?? existing.description,
         nodes: nextMeta as any
       }
     });

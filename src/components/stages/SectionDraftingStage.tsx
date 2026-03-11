@@ -21,7 +21,7 @@ import PaperMarkdownEditor, {
   type PaperFigureDisplayMeta
 } from '@/components/paper/PaperMarkdownEditor';
 
-// Import shared components from patent drafting
+// Shared drafting components used by the paper workflow
 import BackendActivityPanel from '@/components/drafting/BackendActivityPanel';
 import WritingSamplesModal from '@/components/drafting/WritingSamplesModal';
 import PersonaManager, { type PersonaSelection } from '@/components/drafting/PersonaManager';
@@ -29,6 +29,7 @@ import PersonaManager, { type PersonaSelection } from '@/components/drafting/Per
 import PaperInstructionsModal from './PaperInstructionsModal';
 import PaperSectionInstructionPopover from './PaperSectionInstructionPopover';
 import FloatingWritingPanel from '@/components/paper/FloatingWritingPanel';
+import { getPaperFigureCaptionSeed } from '@/lib/figure-generation/paper-figure-record';
 import { extractFigureSuggestionMeta } from '@/lib/figure-generation/suggestion-meta';
 import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 import InlineDimensionProposal from '@/components/paper/InlineDimensionProposal';
@@ -704,6 +705,7 @@ export default function SectionDraftingStage({
     title: string;
     caption?: string;
     description?: string;
+    generationPrompt?: string;
     notes?: string;
     imagePath?: string;
     status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED';
@@ -1124,6 +1126,7 @@ export default function SectionDraftingStage({
           title: f.title,
           caption: f.caption || f.nodes?.caption || f.description,
           description: f.description,
+          generationPrompt: f.generationPrompt || f.nodes?.generationPrompt,
           notes: f.notes || f.nodes?.notes,
           imagePath: f.imagePath || f.nodes?.imagePath,
           status: f.status || f.nodes?.status || (f.imagePath ? 'GENERATED' : 'PLANNED'),
@@ -2046,6 +2049,7 @@ export default function SectionDraftingStage({
 
       // Build suggestionMeta for the figure plan so the generate route can use it
       const suggestionMeta = extractFigureSuggestionMeta(meta);
+      const initialCaption = getPaperFigureCaptionSeed({ suggestionMeta: suggestionMeta || null });
 
       // First create the figure plan with full suggestion context
       const createRes = await fetch(`/api/papers/${sessionId}/figures`, {
@@ -2056,11 +2060,11 @@ export default function SectionDraftingStage({
         },
         body: JSON.stringify({
           title,
-          caption: description,
-          description,
+          caption: initialCaption,
+          generationPrompt: description,
           category,
           figureType,
-          notes: description,
+          notes: '',
           suggestionMeta
         })
       });
@@ -2132,7 +2136,7 @@ export default function SectionDraftingStage({
         },
         body: JSON.stringify({
           title: figure.title,
-          description: figure.notes || figure.caption || figure.description || figure.title,
+          description: figure.generationPrompt || figure.notes || figure.caption || figure.description || figure.title,
           category: figure.category || 'DIAGRAM',
           figureType: figure.figureType || 'auto',
           useLLM: true,

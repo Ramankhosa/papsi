@@ -8,8 +8,6 @@
  * - SUGGEST: AI generates based on paper context (abstract, sections)
  * - GUIDED: User provides specific instructions
  * - REFINE: User uploads an image (hand-drawn or existing) for AI refinement
- * 
- * Adapted from the patent sketch service for research paper needs.
  */
 
 import { prisma } from '@/lib/prisma'
@@ -23,6 +21,7 @@ import type {
   IllustrationFigureGenre,
   IllustrationRenderDirectives
 } from './types'
+import { getPaperFigureGenerationPrompt } from './paper-figure-record'
 
 // Types
 export type PaperSketchMode = 'SUGGEST' | 'GUIDED' | 'REFINE'
@@ -1226,7 +1225,7 @@ export async function generatePaperSketch(
 
   // Save image to disk
   try {
-    const uploadDir = path.join(process.cwd(), SKETCH_UPLOAD_DIR, sessionId)
+    const uploadDir = path.join(process.cwd(), SKETCH_UPLOAD_DIR)
     await fs.mkdir(uploadDir, { recursive: true })
 
     const extension = finalMimeType.includes('png') ? 'png' : 'jpg'
@@ -1235,7 +1234,7 @@ export async function generatePaperSketch(
     
     await fs.writeFile(filePath, finalImageBuffer)
 
-    const publicPath = `/uploads/paper-sketches/${sessionId}/${filename}`
+    const publicPath = `/uploads/paper-sketches/${filename}`
     console.log(`[PaperSketchService] Saved sketch to: ${publicPath}`)
 
     // Update or create figure plan
@@ -1254,6 +1253,10 @@ export async function generatePaperSketch(
           data: {
             nodes: {
               ...existingNodes,
+              caption: (typeof existingNodes.caption === 'string' && existingNodes.caption.trim())
+                ? existingNodes.caption
+                : (persistedSpecV2.captionDraft || undefined),
+              generationPrompt: userPrompt || existingNodes.generationPrompt || undefined,
               status: 'GENERATED',
               imagePath: publicPath,
               sketchMode: mode,
@@ -1276,17 +1279,19 @@ export async function generatePaperSketch(
       
       const newFigureNo = (maxFigureNo._max.figureNo || 0) + 1
       
+      const initialCaption = persistedSpecV2.captionDraft || ''
       const newFigure = await prisma.figurePlan.create({
         data: {
           sessionId,
           figureNo: newFigureNo,
           title: title || `Sketch ${newFigureNo}`,
-          description: userPrompt || 'AI-generated infographic overview',
+          description: initialCaption,
           nodes: {
             status: 'GENERATED',
             category: 'ILLUSTRATED_FIGURE',
             figureType: 'sketch',
-            caption: userPrompt || 'AI-generated infographic overview',
+            caption: initialCaption,
+            generationPrompt: userPrompt || undefined,
             imagePath: publicPath,
             sketchMode: mode,
             figureGenre: effective.genre,
@@ -1358,8 +1363,7 @@ export async function modifyPaperSketch(
     return { success: false, error: 'Could not read existing image' }
   }
 
-  // Get caption from nodes or description field
-  const caption = nodes.caption || figure.description || ''
+  const generationPrompt = getPaperFigureGenerationPrompt((nodes as Record<string, unknown>) || {}, figure.description || '')
   const storedSpecV2 = (nodes.illustrationSpecV2 as IllustrationStructuredSpecV2 | undefined)
   const storedGenre = (nodes.figureGenre as IllustrationFigureGenre | undefined)
   const storedDirectives = (nodes.renderDirectives as IllustrationRenderDirectives | undefined)
@@ -1371,7 +1375,7 @@ export async function modifyPaperSketch(
     figureId,
     mode: 'REFINE',
     title: figure.title,
-    userPrompt: caption,
+    userPrompt: generationPrompt || undefined,
     illustrationSpecV2: storedSpecV2,
     figureGenre: storedGenre,
     renderDirectives: storedDirectives,

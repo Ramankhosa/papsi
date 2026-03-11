@@ -16,7 +16,7 @@ import PaperImproveStage from '@/components/stages/PaperImproveStage';
 import SectionDraftingStage from '@/components/stages/SectionDraftingStage';
 import HumanizationStage from '@/components/stages/HumanizationStage';
 import ReviewExportStage from '@/components/stages/ReviewExportStage';
-import VerticalStageNav from '@/components/drafting/VerticalStageNav';
+import PaperVerticalStageNav from '@/components/stages/PaperVerticalStageNav';
 import { getLatestPaperReview } from '@/lib/paper-review-utils';
 import { STAGE_ORDER } from '@/lib/stage-navigation-config';
 
@@ -71,15 +71,6 @@ export default function PaperDraftingPage() {
   const [hasHydratedStage, setHasHydratedStage] = useState(false);
   const [pendingStage, setPendingStage] = useState<StageKey | null>(null);
   const [stageWarning, setStageWarning] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-
-  // Initialize sidebar state from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('paper_nav_collapsed');
-    if (saved === 'true') {
-      setSidebarCollapsed(true);
-    }
-  }, []);
 
   const loadSession = useCallback(async () => {
     if (!paperId || !authToken) {
@@ -366,7 +357,7 @@ export default function PaperDraftingPage() {
   const prevStage = currentIndex > 0 ? STAGE_ORDER[currentIndex - 1] : null;
   const nextStage = currentIndex < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIndex + 1] : null;
 
-  // Async navigation handler for VerticalStageNav
+  // Async navigation handler for the paper stage navigation
   const handleNavigateToStage = useCallback(async (stageKey: string) => {
     handleStageChange(stageKey as StageKey);
   }, [handleStageChange]);
@@ -375,17 +366,16 @@ export default function PaperDraftingPage() {
     <div className="min-h-screen bg-[#F5F6F7]">
       {/* Vertical Stage Navigation Sidebar */}
       {session && (
-        <VerticalStageNav
+        <PaperVerticalStageNav
           session={session}
           currentStage={currentStage}
-          patentId={paperId}
+          paperId={paperId}
           onNavigateToStage={handleNavigateToStage}
-          onCollapsedChange={setSidebarCollapsed}
         />
       )}
 
       {/* Main Content Area - Shifted right for sidebar */}
-      <div className={`${session ? (sidebarCollapsed ? 'pl-[68px]' : 'pl-72') : ''} transition-all duration-300`}>
+      <div className={`${session ? 'pl-72' : ''} transition-all duration-300`}>
         <div className="max-w-5xl mx-auto px-6 py-8">
           {/* Header */}
           <div className="mb-6">

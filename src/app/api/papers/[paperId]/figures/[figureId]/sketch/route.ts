@@ -12,6 +12,13 @@ import { authenticateUser } from '@/lib/auth-middleware'
 import { generatePaperSketch, modifyPaperSketch, PaperSketchMode } from '@/lib/figure-generation/paper-sketch-service'
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image'
 import { inferPaperFigureMetadataFromStoredImage } from '@/lib/figure-generation/paper-figure-metadata'
+import {
+  asPaperFigureMeta,
+  getPaperFigureCaption,
+  getPaperFigureCaptionSeed,
+  getPaperFigureImageVersion,
+  getPaperFigureStoredImagePath,
+} from '@/lib/figure-generation/paper-figure-record'
 
 // Schema for sketch generation request
 const sketchGenerateSchema = z.object({
@@ -79,7 +86,7 @@ async function refreshFigureMetadata(params: {
   sessionId: string
   figureId: string
   fallbackTitle?: string
-  fallbackCaption?: string
+  fallbackPrompt?: string
   fallbackCategory?: string
   fallbackFigureType?: string
   overrideSuggestionMeta?: Record<string, unknown> | null
@@ -90,8 +97,8 @@ async function refreshFigureMetadata(params: {
 
   if (!figure) return null
 
-  const nodes = (figure.nodes as any) || {}
-  const storedImagePath = typeof nodes.imagePath === 'string' ? nodes.imagePath.trim() : ''
+  const nodes = asPaperFigureMeta(figure.nodes)
+  const storedImagePath = getPaperFigureStoredImagePath(nodes)
   const nextNodes = { ...nodes }
 
   if (!storedImagePath) {
@@ -107,27 +114,44 @@ async function refreshFigureMetadata(params: {
     return null
   }
 
+  const effectiveSuggestionMeta = params.overrideSuggestionMeta
+    || (nodes.suggestionMeta && typeof nodes.suggestionMeta === 'object'
+      ? nodes.suggestionMeta as Record<string, unknown>
+      : null)
+  const currentCaption = getPaperFigureCaption(nextNodes, figure.description || '')
+    || getPaperFigureCaptionSeed({
+      suggestionMeta: effectiveSuggestionMeta,
+      inferredImageMeta: nextNodes.inferredImageMeta || null
+    })
+
   const inferredImageMeta = await inferPaperFigureMetadataFromStoredImage({
     requestHeaders: buildRequestHeaders(params.request),
     imagePath: storedImagePath,
     title: figure.title || params.fallbackTitle || `Figure ${figure.figureNo}`,
-    caption: (typeof nodes.caption === 'string' && nodes.caption.trim())
-      ? nodes.caption
-      : figure.description || params.fallbackCaption || null,
+    caption: currentCaption || null,
     category: String(nodes.category || params.fallbackCategory || 'ILLUSTRATED_FIGURE'),
     figureType: String(nodes.figureType || params.fallbackFigureType || 'sketch'),
-    suggestionMeta: params.overrideSuggestionMeta
-      || (nodes.suggestionMeta && typeof nodes.suggestionMeta === 'object'
-        ? nodes.suggestionMeta as Record<string, unknown>
-        : null)
+    suggestionMeta: effectiveSuggestionMeta
   })
+
+  const nextCaption = currentCaption
+    || inferredImageMeta?.summary
+    || getPaperFigureCaptionSeed({
+      suggestionMeta: effectiveSuggestionMeta,
+      inferredImageMeta: inferredImageMeta ?? null
+    })
 
   await prisma.figurePlan.update({
     where: { id: figure.id },
     data: {
+      ...(nextCaption ? { description: nextCaption } : {}),
       nodes: {
         ...nextNodes,
-        suggestionMeta: params.overrideSuggestionMeta ?? nextNodes.suggestionMeta ?? null,
+        suggestionMeta: effectiveSuggestionMeta,
+        caption: nextCaption || nextNodes.caption || '',
+        generationPrompt: (typeof nextNodes.generationPrompt === 'string' && nextNodes.generationPrompt.trim())
+          ? nextNodes.generationPrompt
+          : params.fallbackPrompt || undefined,
         inferredImageMeta: inferredImageMeta ?? null
       } as any
     }
@@ -218,23 +242,28 @@ export async function POST(
 
     const targetFigureId = result.figureId || (!isNewFigure ? figureId : undefined)
     let inferredImageMeta = null
+    let latestFigure = null
     if (targetFigureId) {
       inferredImageMeta = await refreshFigureMetadata({
         request,
         sessionId: paperId,
         figureId: targetFigureId,
         fallbackTitle: data.title,
-        fallbackCaption: data.userPrompt,
+        fallbackPrompt: data.userPrompt,
         fallbackCategory: 'ILLUSTRATED_FIGURE',
         fallbackFigureType: 'sketch',
         overrideSuggestionMeta: data.suggestionMeta || null
       })
+      latestFigure = await getFigureForSession(paperId, targetFigureId)
     }
+    const latestNodes = asPaperFigureMeta(latestFigure?.nodes)
+    const latestImagePath = getPaperFigureStoredImagePath(latestNodes) || result.imagePath
+    const imageVersion = getPaperFigureImageVersion(latestNodes, latestImagePath) || result.imagePath
 
     return NextResponse.json({
       success: true,
       figureId: result.figureId,
-      imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, result.imagePath),
+      imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, latestImagePath, imageVersion),
       inferredImageMeta
     })
 
@@ -303,15 +332,19 @@ export async function PATCH(
       sessionId: paperId,
       figureId,
       fallbackTitle: figure.title,
-      fallbackCaption: figure.description || undefined,
+      fallbackPrompt: undefined,
       fallbackCategory: String((figure.nodes as any)?.category || 'ILLUSTRATED_FIGURE'),
       fallbackFigureType: String((figure.nodes as any)?.figureType || 'sketch')
     })
+    const refreshedFigure = await getFigureForSession(paperId, result.figureId || figureId)
+    const refreshedNodes = asPaperFigureMeta(refreshedFigure?.nodes)
+    const refreshedImagePath = getPaperFigureStoredImagePath(refreshedNodes) || result.imagePath
+    const imageVersion = getPaperFigureImageVersion(refreshedNodes, refreshedImagePath) || result.imagePath
 
     return NextResponse.json({
       success: true,
       figureId: result.figureId,
-      imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, result.imagePath),
+      imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, refreshedImagePath, imageVersion),
       inferredImageMeta
     })
 
