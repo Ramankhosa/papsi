@@ -7,6 +7,7 @@ type StepState = "ok" | "running" | "queued" | "error" | undefined
 export type ActivityStep = {
   id: string
   state?: StepState
+  label?: string
 }
 
 function titleCase(s: string) {
@@ -122,7 +123,7 @@ export default function BackendActivityPanel({
           <div key={s.id} className={`flex items-center gap-1.5 whitespace-nowrap transition-opacity duration-300 ${s.state === 'queued' ? 'opacity-40' : 'opacity-100'}`}>
             <StateIcon state={s.state} />
             <span className={`text-xs ${s.state === 'ok' ? 'text-gray-500' : 'text-gray-800 font-medium'}`}>
-              {humanizeStep(s.id)}
+              {s.label || humanizeStep(s.id)}
             </span>
           </div>
         ))}

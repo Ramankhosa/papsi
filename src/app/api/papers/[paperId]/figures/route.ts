@@ -229,7 +229,8 @@ function toResponse(plan: any) {
     imagePath,
     generatedCode: meta.generatedCode || null,
     suggestionMeta: meta.suggestionMeta || null,
-    inferredImageMeta: meta.inferredImageMeta || null
+    inferredImageMeta: meta.inferredImageMeta || null,
+    updatedAt: plan.updatedAt instanceof Date ? plan.updatedAt.toISOString() : null
   };
 }
 

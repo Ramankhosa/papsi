@@ -45,6 +45,34 @@ function parseSectionKeys(value: unknown): string[] {
   return Array.from(new Set(normalized)).filter((sectionKey) => !isPass1ExcludedSection(sectionKey));
 }
 
+function supportsPass1FigureInjection(sectionKey: string): boolean {
+  const normalized = normalizeSectionKey(sectionKey);
+  return normalized !== 'abstract' && !isPass1ExcludedSection(normalized);
+}
+
+function parseFigureSelections(value: unknown): Record<string, { useFigures: boolean; selectedFigureIds: string[] }> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const normalized: Record<string, { useFigures: boolean; selectedFigureIds: string[] }> = {};
+  for (const [rawSectionKey, rawConfig] of Object.entries(value as Record<string, unknown>)) {
+    const sectionKey = normalizeSectionKey(rawSectionKey);
+    if (!supportsPass1FigureInjection(sectionKey)) continue;
+    if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) continue;
+
+    const config = rawConfig as Record<string, unknown>;
+    const selectedFigureIds = Array.isArray(config.selectedFigureIds)
+      ? Array.from(new Set(config.selectedFigureIds.map((id) => String(id || '').trim()).filter(Boolean)))
+      : [];
+
+    normalized[sectionKey] = {
+      useFigures: parseBooleanFlag(config.useFigures) && selectedFigureIds.length > 0,
+      selectedFigureIds
+    };
+  }
+
+  return normalized;
+}
+
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   const where = user.roles?.includes('SUPER_ADMIN')
     ? { id: sessionId }
@@ -166,6 +194,8 @@ export async function POST(
     const forceRerun = parseBooleanFlag(forceFromQuery) || parseBooleanFlag(requestBody?.force);
     const retryFailedOnly = parseBooleanFlag(retryFailedOnlyFromQuery) || parseBooleanFlag(requestBody?.retryFailedOnly);
     const selectedSectionKeys = parseSectionKeys(requestBody?.sectionKeys);
+    const figureSelections = parseFigureSelections(requestBody?.figureSelections);
+    const requestHeaders = Object.fromEntries(request.headers.entries());
 
     let sectionKeys: string[] | undefined;
     if (Array.isArray(requestBody?.sectionKeys) && selectedSectionKeys.length === 0) {
@@ -216,7 +246,9 @@ export async function POST(
     // so the UI gets an instant response while generation runs in background
     paperSectionService.runParallelPass1(sessionId, tenantContext, {
       forceRerun,
-      sectionKeys
+      sectionKeys,
+      figureSelections,
+      requestHeaders
     }).catch(err => {
       console.error('[Prepare] Background Pass 1 failed:', err);
     });

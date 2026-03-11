@@ -40,8 +40,14 @@ import { researchIntentLockService, type ResearchIntentLock } from './research-i
 import { argumentPlannerService } from './argument-planner-service';
 import { citationValidator } from './citation-validator';
 import { buildRhetoricalPromptBlock } from './rhetorical-blueprint-service';
-import { rhetoricalComposerService } from './rhetorical-composer-service';
 import { systemPromptTemplateService, TEMPLATE_KEYS } from './system-prompt-template-service';
+import {
+  buildPass1FigureGroundingSnapshot,
+  formatSelectedFigureContext,
+  loadFigurePromptContext,
+  type FigurePromptContext,
+  type Pass1FigureGroundingSnapshot
+} from './paper-figure-grounding-service';
 import type { PaperSection, PaperSectionStatus } from '@prisma/client';
 import crypto from 'crypto';
 import { polishDraftMarkdown } from '../markdown-draft-formatter';
@@ -116,6 +122,9 @@ export interface SectionGenerationInput {
   personaSelection?: PaperPersonaSelection; // Optional persona selection (primary + secondary)
   regenerate?: boolean;      // If true, regenerate even if exists
   tenantContext?: TenantContext | null; // Optional tenant context for metering-aware LLM calls
+  useFigures?: boolean;
+  selectedFigureIds?: string[];
+  requestHeaders?: Record<string, string>;
 }
 
 export interface UserSectionInstructionData {
@@ -160,6 +169,12 @@ interface StoredPass1Artifact {
   generatedAt?: string;
   promptUsed?: string;
   tokensUsed?: number;
+  figureGrounding?: Pass1FigureGroundingSnapshot | null;
+}
+
+interface BackgroundPass1FigureSelection {
+  useFigures?: boolean;
+  selectedFigureIds?: string[];
 }
 
 function computeStoredPass1Fingerprint(content: string): string {
@@ -178,6 +193,7 @@ function buildStoredPass1Artifact(params: {
   generatedAt?: Date | string | null;
   promptUsed?: string;
   tokensUsed?: number | null;
+  figureGrounding?: Pass1FigureGroundingSnapshot | null;
 }): StoredPass1Artifact | null {
   const content = String(params.content || '').trim();
   if (!content) return null;
@@ -193,7 +209,8 @@ function buildStoredPass1Artifact(params: {
     wordCount: countStoredPass1Words(content),
     generatedAt,
     promptUsed: String(params.promptUsed || '').trim() || undefined,
-    tokensUsed: Number(params.tokensUsed) > 0 ? Number(params.tokensUsed) : undefined
+    tokensUsed: Number(params.tokensUsed) > 0 ? Number(params.tokensUsed) : undefined,
+    figureGrounding: params.figureGrounding || null
   };
 }
 
@@ -213,6 +230,11 @@ const PASS1_EXCLUDED_SECTION_KEYS = new Set(['references', 'reference', 'bibliog
 
 function isPass1ExcludedSection(sectionKey: string): boolean {
   return PASS1_EXCLUDED_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
+}
+
+function supportsPass1FigureInjection(sectionKey: string): boolean {
+  const normalized = normalizeSectionKey(sectionKey);
+  return normalized !== 'abstract' && !isPass1ExcludedSection(normalized);
 }
 
 // ============================================================================
@@ -757,85 +779,6 @@ class PaperSectionService {
       ? { ...(polishResult.driftReport as unknown as Record<string, unknown>) }
       : {};
 
-    if (
-      isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
-      && isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
-    ) {
-      const blueprint = await blueprintService.getBlueprint(section.sessionId);
-      const sectionPlan = blueprint?.sectionPlan.find(
-        (entry) => normalizeSectionKey(entry.sectionKey) === normalizeSectionKey(section.sectionKey)
-      );
-      const rhetoricalBlueprint = sectionPlan?.rhetoricalBlueprint;
-
-      if (rhetoricalBlueprint?.enabled) {
-        let intentLock: ResearchIntentLock | null = null;
-        if (tenantContext) {
-          try {
-            intentLock = await researchIntentLockService.getOrCreateIntentLock(section.sessionId, tenantContext);
-          } catch (error) {
-            console.warn('[PaperSectionService] Failed to load intent lock for rhetorical validation:', error);
-          }
-        } else if (
-          blueprint?.intentLock
-          && typeof blueprint.intentLock === 'object'
-          && !Array.isArray(blueprint.intentLock)
-        ) {
-          intentLock = blueprint.intentLock as unknown as ResearchIntentLock;
-        }
-
-        const evidenceContext = await this.getPass1EvidencePromptContext(section.sessionId, section.sectionKey);
-        const evidenceDigestSummary = formatEvidenceDigest(evidenceContext.evidenceDigest);
-
-        try {
-          const preRhetoricalContent = finalContent;
-          const preRhetoricalPromptUsed = finalPromptUsed;
-
-          const rhetoricalResult = await rhetoricalComposerService.applyPass2B({
-            sessionId: section.sessionId,
-            sectionKey: section.sectionKey,
-            content: finalContent,
-            rhetoricalBlueprint,
-            researchIntentLock: intentLock,
-            fallbackContributions: blueprint?.keyContributions || [],
-            evidenceDigestSummary,
-            tenantContext: tenantContext || null,
-          });
-
-          finalTokensUsed += Number(rhetoricalResult.tokensUsed || 0);
-          const rolledBack = !rhetoricalResult.validation.passed;
-
-          if (!rolledBack && rhetoricalResult.content) {
-            finalContent = rhetoricalResult.content;
-          } else {
-            finalContent = preRhetoricalContent;
-          }
-
-          if (!rolledBack && rhetoricalResult.promptUsed) {
-            finalPromptUsed = rhetoricalResult.promptUsed;
-          } else {
-            finalPromptUsed = preRhetoricalPromptUsed;
-          }
-
-          validationReport = {
-            ...validationReport,
-            rhetoricalValidation: {
-              enabled: true,
-              pass2bApplied: true,
-              rolledBack,
-              retries: rhetoricalResult.retries,
-              passed: rhetoricalResult.validation.passed,
-              violations: rhetoricalResult.validation.violations,
-              inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs,
-              requiredSlotsChecked: rhetoricalResult.validation.requiredSlotsChecked,
-              slotViolations: rhetoricalResult.validation.slotViolations
-            }
-          };
-        } catch (error) {
-          console.warn('[PaperSectionService] Rhetorical composer failed (non-fatal):', error);
-        }
-      }
-    }
-
     const updated = await prisma.paperSection.update({
       where: { id: section.id },
       data: {
@@ -868,7 +811,12 @@ class PaperSectionService {
   async runParallelPass1(
     sessionId: string,
     tenantContext?: TenantContext | null,
-    options?: { forceRerun?: boolean; sectionKeys?: string[] }
+    options?: {
+      forceRerun?: boolean;
+      sectionKeys?: string[];
+      figureSelections?: Record<string, BackgroundPass1FigureSelection>;
+      requestHeaders?: Record<string, string>;
+    }
   ): Promise<BackgroundGenResult> {
     const forceRerun = options?.forceRerun === true;
     const progress: BackgroundGenProgress = { total: 0, completed: 0, failed: 0, sections: {} };
@@ -894,6 +842,7 @@ class PaperSectionService {
       const requestedSectionSet = requestedSectionKeys.length > 0
         ? new Set(requestedSectionKeys)
         : null;
+      const figureSelections = options?.figureSelections || {};
 
       const generationOrder = requestedSectionSet
         ? fullGenerationOrder.filter(sectionKey => requestedSectionSet.has(sectionKey))
@@ -975,6 +924,18 @@ class PaperSectionService {
             throw new Error(`Section ${sectionKey} not in blueprint`);
           }
 
+          const figureSelection = figureSelections[normalizeSectionKey(sectionKey)] || {};
+          const figurePromptContext = supportsPass1FigureInjection(sectionKey) && figureSelection.useFigures
+            ? await loadFigurePromptContext({
+                sessionId,
+                sectionKey,
+                useFigures: true,
+                selectedFigureIds: figureSelection.selectedFigureIds,
+                requestHeaders: options?.requestHeaders,
+                waitForPendingMetadata: true,
+              })
+            : null;
+
           // No previous memories in parallel mode — traded for speed
           const { prompt } = await this.buildSectionPromptWithDebug(
             blueprintContext,
@@ -986,7 +947,8 @@ class PaperSectionService {
             undefined,
             sessionId,
             sectionKey,
-            tenantContext || undefined
+            tenantContext || undefined,
+            figurePromptContext
           );
 
           // Mark section as PREPARING unless we are only refreshing Pass 1 base
@@ -1037,7 +999,8 @@ class PaperSectionService {
             memory: parsed.memory,
             generatedAt: pass1CompletedAt,
             promptUsed: prompt,
-            tokensUsed: result.response.outputTokens
+            tokensUsed: result.response.outputTokens,
+            figureGrounding: buildPass1FigureGroundingSnapshot(figurePromptContext)
           });
 
           await prisma.paperSection.update({
@@ -1566,7 +1529,8 @@ class PaperSectionService {
     writingStyleBlock?: string,
     sessionId?: string,
     sectionKey?: string,
-    tenantContext?: TenantContext
+    tenantContext?: TenantContext,
+    figurePromptContext?: FigurePromptContext | null
   ): Promise<{ prompt: string; debugInfo: PromptDebugInfo | null }> {
     const { thesisStatement, centralObjective, keyContributions, currentSection, preferredTerms } = blueprintContext;
 
@@ -1579,6 +1543,7 @@ class PaperSectionService {
       intentLock?: string;
       rhetoricalBlueprint?: string;
       argumentPlan?: string;
+      figureGrounding?: string;
       previousMemories?: string;
       preferredTerms?: string;
       writingPersona?: string;
@@ -1664,6 +1629,36 @@ ${evidenceGaps}`
       && !hasCoveragePlaceholders
       ? citationBudgetBlock
       : '';
+    const figureContextBlockText = sectionKey
+      ? formatSelectedFigureContext(
+          figurePromptContext || { useFigures: false, selectedFigureIds: [], figures: [], effectiveFigureIds: [], waitedForMetadata: false },
+          sectionKey
+        )
+      : '';
+    const figureGroundingFallback = `FIGURE GROUNDING RULES:
+- Use only the figure metadata supplied below; do not infer visual details beyond it.
+- Mention figures only when they materially support the section's claims.
+- Refer to them only as [Figure N].
+- Do not output markdown image syntax, raw URLs, or invented figure numbers.
+- Place [Figure N] inline in the sentence or clause that is grounded by that figure.
+- In Methodology, use figures only for setup, architecture, flow, instrumentation, or procedure details.
+- In Results, prioritize numeric highlights, observed patterns, compared groups, and results-ready details.
+- In Discussion, interpret only patterns already grounded in the selected figures or reported results.
+- Treat claimsToAvoid as hard exclusions.`;
+    const figureGroundingBlock = figureContextBlockText && sectionKey
+      ? await systemPromptTemplateService.resolveWithFallback(
+          {
+            templateKey: TEMPLATE_KEYS.FIGURE_GROUNDING_BLOCK,
+            applicationMode: 'paper',
+            sectionScope: sectionKey,
+            paperTypeScope: paperTypeCode
+          },
+          figureGroundingFallback
+        )
+      : '';
+    if (figureContextBlockText) {
+      debugComponents.figureGrounding = `${figureGroundingBlock}\n\n${figureContextBlockText}`.trim();
+    }
 
     // Tier 2: Generate ResearchIntentLock + ArgumentPlan (gated by ENABLE_ARGUMENT_PLAN)
     let intentLockBlock = '';
@@ -1868,6 +1863,12 @@ ${coverageFallbackBlock ? `
 [PRIORITY 2.7 - CITATION COVERAGE] CITATION BUDGET RULES
 ${coverageFallbackBlock}
 ` : ''}
+${figureContextBlockText ? `
+[PRIORITY 2.75 - FIGURE GROUNDING] SELECTED FIGURES
+${figureGroundingBlock}
+
+${figureContextBlockText}
+` : ''}
 ${argumentPlanBlock ? `
 [PRIORITY 2.8 - ARGUMENT PLAN] SECTION OUTLINE (follow this structure)
 ${argumentPlanBlock}
@@ -1980,6 +1981,9 @@ CONTENT FIELD RULES:
 - Use - for bullet lists, 1. for numbered lists
 - Use \\n for line breaks
 - Write flowing paragraphs for explanations
+- Preserve [Figure N] markers exactly when figure grounding is used.
+- Use only [Figure N] markers from the supplied figure block.
+- Do not emit markdown image syntax or raw image URLs.
 
 MEMORY FIELD RULES:
 - keyPoints: 3-5 bullets summarizing what this section covers
@@ -2053,67 +2057,11 @@ MEMORY FIELD RULES:
       .map((key) => String(key || '').trim())
       .filter((key) => key && initialCitationKeys.has(key));
 
-    let report = citationValidator.validate(currentContent, { mustCiteKeys });
-    const maxRewriteAttempts = 2;
-
-    for (let attempt = 1; attempt <= maxRewriteAttempts && !report.passed; attempt++) {
-      const rewritePrompt = `${citationValidator.buildRewritePrompt(currentContent, report)}
-
-ADDITIONAL HARD RULES:
-- Do NOT introduce any new [CITE:key] markers that were not present in the ORIGINAL DRAFT.
-- Reduce citation density only by removing or redistributing existing citation markers in violating paragraphs.
-- Preserve meaning, factual claims, and paragraph order.
-- Return ONLY corrected markdown content.`;
-
-      const rewriteResult = await llmGateway.executeLLMOperation(
-        params.llmRequestContext,
-        {
-          taskCode: 'LLM2_DRAFT',
-          stageCode: 'PAPER_SECTION_DRAFT',
-          prompt: rewritePrompt,
-          parameters: {
-            purpose: params.purpose,
-            temperature: 0.2,
-          },
-          idempotencyKey: crypto.randomUUID(),
-          metadata: {
-            sessionId: params.sessionId,
-            sectionKey: params.sectionKey,
-            purpose: params.purpose,
-            attempt,
-          }
-        }
-      );
-
-      if (!rewriteResult.success || !rewriteResult.response?.output) {
-        console.warn(
-          `[PaperSectionService] Citation budget rewrite failed for ${params.sectionKey} (attempt ${attempt}):`,
-          rewriteResult.error?.message || 'empty response'
-        );
-        break;
-      }
-
-      const rewrittenContent = this.extractRewriteContent(rewriteResult.response.output);
-      if (!rewrittenContent) {
-        break;
-      }
-
-      const rewrittenKeys = this.extractCitationKeySet(rewrittenContent);
-      const introducedNewKey = Array.from(rewrittenKeys).some((key) => !initialCitationKeys.has(key));
-      if (introducedNewKey) {
-        console.warn(
-          `[PaperSectionService] Citation rewrite introduced new citation keys for ${params.sectionKey}; discarding attempt ${attempt}.`
-        );
-        continue;
-      }
-
-      currentContent = rewrittenContent;
-      report = citationValidator.validate(currentContent, { mustCiteKeys });
-    }
+    const report = citationValidator.validate(currentContent, { mustCiteKeys });
 
     if (!report.passed) {
       console.warn(
-        `[PaperSectionService] Citation budget validator still reports violations for ${params.sectionKey} after rewrites.`,
+        `[PaperSectionService] Citation budget validator reports lint issues for ${params.sectionKey}; preserving original draft.`,
         report.rewriteDirectives
       );
     }

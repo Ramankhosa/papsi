@@ -78,6 +78,12 @@ export interface PolishResult {
   error?: string;
 }
 
+export interface PolishRetryNotice {
+  reason: 'drift_validation';
+  message: string;
+  driftReport?: DriftReport;
+}
+
 // ============================================================================
 // Drift Guard Helpers
 // ============================================================================
@@ -373,7 +379,12 @@ class SectionPolishService {
     return this.runPolishPass(input, false);
   }
 
-  async polishWithRetry(input: PolishInput): Promise<PolishResult> {
+  async polishWithRetry(
+    input: PolishInput,
+    options?: {
+      onRetry?: (notice: PolishRetryNotice) => Promise<void> | void;
+    }
+  ): Promise<PolishResult> {
     const firstAttempt = await this.runPolishPass(input, false);
 
     if (firstAttempt.success && firstAttempt.driftReport?.passed) {
@@ -389,6 +400,12 @@ class SectionPolishService {
       `Missing cites: ${firstAttempt.driftReport?.citationParity.missing.join(', ') || 'none'}`,
       `Missing nums: ${firstAttempt.driftReport?.numberPreservation.missing.join(', ') || 'none'}`
     );
+
+    await options?.onRetry?.({
+      reason: 'drift_validation',
+      message: 'Retrying publication polish to preserve citations and numbers.',
+      driftReport: firstAttempt.driftReport
+    });
 
     const retryResult = await this.runPolishPass(input, true, firstAttempt.driftReport);
 

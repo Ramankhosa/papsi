@@ -61,7 +61,45 @@ type Pass1Artifact = {
   content: string;
   wordCount?: number;
   generatedAt?: string;
+  figureGrounding?: {
+    enabled: boolean;
+    selectedFigureIds: string[];
+    effectiveFigureIds: string[];
+    figureRefs: string[];
+    figureSignature: string;
+    newestFigureUpdatedAt?: string;
+    waitedForMetadata?: boolean;
+  } | null;
 };
+
+function parsePass1FigureGrounding(value: unknown): Pass1Artifact['figureGrounding'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const figureSignature = String(record.figureSignature || '').trim();
+  const selectedFigureIds = Array.isArray(record.selectedFigureIds)
+    ? record.selectedFigureIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  const effectiveFigureIds = Array.isArray(record.effectiveFigureIds)
+    ? record.effectiveFigureIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  const figureRefs = Array.isArray(record.figureRefs)
+    ? record.figureRefs.map((ref) => String(ref || '').trim()).filter(Boolean)
+    : [];
+
+  if (!record.enabled && selectedFigureIds.length === 0 && effectiveFigureIds.length === 0 && figureRefs.length === 0) {
+    return null;
+  }
+
+  return {
+    enabled: record.enabled === true,
+    selectedFigureIds,
+    effectiveFigureIds,
+    figureRefs,
+    figureSignature,
+    newestFigureUpdatedAt: String(record.newestFigureUpdatedAt || '').trim() || undefined,
+    waitedForMetadata: record.waitedForMetadata === true ? true : undefined,
+  };
+}
 
 function parsePass1Artifact(value: unknown): Pass1Artifact | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -73,7 +111,8 @@ function parsePass1Artifact(value: unknown): Pass1Artifact | null {
   return {
     content,
     ...(Number.isFinite(wordCountRaw) && wordCountRaw > 0 ? { wordCount: wordCountRaw } : {}),
-    ...(generatedAtRaw ? { generatedAt: generatedAtRaw } : {})
+    ...(generatedAtRaw ? { generatedAt: generatedAtRaw } : {}),
+    figureGrounding: parsePass1FigureGrounding(record.figureGrounding)
   };
 }
 
@@ -167,7 +206,8 @@ export async function GET(
           : 0,
         generatedAt,
         source,
-        updatedAt: record?.updatedAt ? record.updatedAt.toISOString() : null
+        updatedAt: record?.updatedAt ? record.updatedAt.toISOString() : null,
+        figureGrounding: artifact?.figureGrounding || null
       };
     });
 

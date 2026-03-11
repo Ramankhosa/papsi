@@ -2,10 +2,12 @@
 
 import { useMemo } from 'react';
 import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
+import type { PaperFigureDisplayMeta } from './PaperMarkdownEditor';
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  figureDisplayMeta?: PaperFigureDisplayMeta;
 }
 
 type ParsedListLine = {
@@ -171,7 +173,35 @@ function buildListTree(items: ParsedListLine[]): ListNode[] {
   return roots;
 }
 
-function renderListGroups(nodes: ListNode[], depth: number = 0): React.ReactNode {
+function renderFigureInline(
+  figureNo: number,
+  figureDisplayMeta?: PaperFigureDisplayMeta
+): React.ReactNode {
+  const meta = figureDisplayMeta?.byNo?.[figureNo];
+  const title = typeof meta?.title === 'string' ? meta.title.trim() : '';
+  const imagePath = typeof meta?.imagePath === 'string' ? meta.imagePath.trim() : '';
+  const label = title ? `Figure ${figureNo}: ${title}` : `Figure ${figureNo}`;
+
+  return (
+    <span className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-1.5 py-0.5 align-middle text-[11px] font-medium text-violet-700">
+      {imagePath ? (
+        <img
+          src={imagePath}
+          alt={label}
+          loading="lazy"
+          className="h-5 w-5 rounded object-cover ring-1 ring-violet-200"
+        />
+      ) : null}
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+function renderListGroups(
+  nodes: ListNode[],
+  depth: number = 0,
+  figureDisplayMeta?: PaperFigureDisplayMeta
+): React.ReactNode {
   if (!nodes.length) return null;
 
   const groups: Array<{ type: 'ul' | 'ol'; nodes: ListNode[] }> = [];
@@ -198,8 +228,8 @@ function renderListGroups(nodes: ListNode[], depth: number = 0): React.ReactNode
       >
         {group.nodes.map((node, nodeIndex) => (
           <li key={`${depth}-${groupIndex}-${nodeIndex}`} className="text-gray-800 pl-1">
-            {formatInlineText(node.text)}
-            {node.children.length > 0 && renderListGroups(node.children, depth + 1)}
+            {formatInlineText(node.text, figureDisplayMeta)}
+            {node.children.length > 0 && renderListGroups(node.children, depth + 1, figureDisplayMeta)}
           </li>
         ))}
       </ListTag>
@@ -207,7 +237,7 @@ function renderListGroups(nodes: ListNode[], depth: number = 0): React.ReactNode
   });
 }
 
-export default function MarkdownRenderer({ content, className = '' }: MarkdownRendererProps) {
+export default function MarkdownRenderer({ content, className = '', figureDisplayMeta }: MarkdownRendererProps) {
   const rendered = useMemo(() => {
     const normalized = polishDraftMarkdown(content || '');
     if (!normalized) return null;
@@ -227,7 +257,7 @@ export default function MarkdownRenderer({ content, className = '' }: MarkdownRe
                 fontFamily: '"Palatino Linotype", "Book Antiqua", Palatino, serif'
               }}
             >
-              {formatInlineText(block.text)}
+              {formatInlineText(block.text, figureDisplayMeta)}
             </h3>
           );
         }
@@ -240,9 +270,9 @@ export default function MarkdownRenderer({ content, className = '' }: MarkdownRe
               fontSize: '12pt',
               fontWeight: 600,
               fontFamily: '"Palatino Linotype", "Book Antiqua", Palatino, serif'
-            }}
-          >
-            {formatInlineText(block.text)}
+              }}
+            >
+            {formatInlineText(block.text, figureDisplayMeta)}
           </h4>
         );
       }
@@ -255,7 +285,7 @@ export default function MarkdownRenderer({ content, className = '' }: MarkdownRe
             style={{ fontSize: '10.5pt', lineHeight: '1.6' }}
           >
             {block.lines.map((line, i) => (
-              <p key={i} className="my-1">{formatInlineText(line)}</p>
+              <p key={i} className="my-1">{formatInlineText(line, figureDisplayMeta)}</p>
             ))}
           </blockquote>
         );
@@ -265,7 +295,7 @@ export default function MarkdownRenderer({ content, className = '' }: MarkdownRe
         const tree = buildListTree(block.items);
         return (
           <div key={index} className="my-2">
-            {renderListGroups(tree)}
+            {renderListGroups(tree, 0, figureDisplayMeta)}
           </div>
         );
       }
@@ -279,11 +309,11 @@ export default function MarkdownRenderer({ content, className = '' }: MarkdownRe
             marginBottom: '0.8em'
           }}
         >
-          {formatInlineText(block.text)}
+          {formatInlineText(block.text, figureDisplayMeta)}
         </p>
       );
     });
-  }, [content]);
+  }, [content, figureDisplayMeta]);
 
   return (
     <div 
@@ -302,7 +332,10 @@ export default function MarkdownRenderer({ content, className = '' }: MarkdownRe
 /**
  * Format inline text (bold, italic, citations)
  */
-function formatInlineText(text: string): React.ReactNode {
+function formatInlineText(
+  text: string,
+  figureDisplayMeta?: PaperFigureDisplayMeta
+): React.ReactNode {
   if (!text) return text;
 
   // Pattern to match bold, italic, and citations
@@ -342,9 +375,12 @@ function formatInlineText(text: string): React.ReactNode {
       );
     } else if (match[7]) {
       // Figure reference [Figure N]
+      const figureNo = Number.parseInt(match[8], 10);
       parts.push(
-        <span key={match.index} className="text-purple-600 bg-purple-50 px-1 rounded text-sm font-medium">
-          [Figure {match[8]}]
+        <span key={match.index}>
+          {Number.isFinite(figureNo) && figureNo > 0
+            ? renderFigureInline(figureNo, figureDisplayMeta)
+            : `[Figure ${match[8]}]`}
         </span>
       );
     }

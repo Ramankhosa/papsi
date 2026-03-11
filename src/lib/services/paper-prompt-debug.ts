@@ -246,6 +246,7 @@ export function buildPromptDebugInfo(
     paperTypeOverride?: string;
     methodologyConstraints?: string;
     blueprintContext?: string;
+    figureGrounding?: string;
     previousMemories?: string;
     preferredTerms?: string;
     writingPersona?: string;
@@ -258,6 +259,7 @@ export function buildPromptDebugInfo(
     createPromptLayer(2, 'PAPER TYPE OVERRIDE (Pass 2 only)', `PaperTypeSectionPrompt.${paperTypeCode} → deferred to polish pipeline`, components.paperTypeOverride || ''),
     createPromptLayer(3, 'METHODOLOGY CONSTRAINTS', `methodology-constraints.ts / ${methodologyType || 'none'}`, components.methodologyConstraints || ''),
     createPromptLayer(4, 'BLUEPRINT CONTEXT', `PaperBlueprint (frozen plan)`, components.blueprintContext || ''),
+    createPromptLayer(4, 'FIGURE GROUNDING', `FigurePlan / stored figure metadata`, components.figureGrounding || ''),
     createPromptLayer(4, 'PREVIOUS SECTIONS MEMORY', `PaperSection.memory (accumulated)`, components.previousMemories || ''),
     createPromptLayer(4, 'PREFERRED TERMS', `Blueprint.preferredTerms`, components.preferredTerms || ''),
     createPromptLayer(6, 'WRITING PERSONA', `PaperWritingSample (user style)`, components.writingPersona || ''),

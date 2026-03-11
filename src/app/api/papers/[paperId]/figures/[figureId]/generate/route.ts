@@ -31,6 +31,7 @@ import {
   getPaperFigureGenerationPrompt,
   getPaperFigureImageVersion,
 } from '@/lib/figure-generation/paper-figure-record';
+import { scheduleStoredPaperFigureMetadataRefresh } from '@/lib/figure-generation/paper-figure-metadata-refresh';
 import { generatePaperSketch } from '@/lib/figure-generation/paper-sketch-service';
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
 import { llmGateway } from '@/lib/metering/gateway';
@@ -829,6 +830,7 @@ export async function POST(
     let plantUMLRenderFailed = false;
     let mermaidRenderError: string | null = null;
     let plantUMLRenderError: string | null = null;
+    let inferredImageMeta: FigureInferenceMeta | null = null;
 
     // Build paper context for LLM grounding
     const paperContext = buildPaperContext(session);
@@ -918,6 +920,7 @@ export async function POST(
 
           if (llmResult.success && llmResult.config) {
             llmMetadata = { tokensUsed: llmResult.tokensUsed, model: llmResult.model };
+            inferredImageMeta = llmResult.inferredMeta || null;
             result = await generateChartFromConfig(llmResult.config as any, {
               theme: { preset: resolvedTheme as any },
               format: 'png'
@@ -1181,6 +1184,7 @@ export async function POST(
           }
 
           llmMetadata = { tokensUsed: llmPlot.tokensUsed, model: llmPlot.model };
+          inferredImageMeta = llmPlot.inferredMeta || null;
           result = await generatePythonChart(llmPlot.spec);
           if (result.success) {
             result.generatedCode = llmPlot.spec.code;
@@ -1229,37 +1233,20 @@ export async function POST(
           }, user.id, undefined);
 
           if (sketchResult.success && sketchResult.imagePath) {
-            const inferredImageMeta = await inferFigureMetadataFromStoredImage({
-              requestHeaders,
-              imagePath: sketchResult.imagePath,
-              title: data.title,
-              caption: data.caption || persistedCaption,
-              category: data.category,
-              figureType: data.figureType,
-              suggestionMeta: sketchMeta
-            });
-
             const latestPlan = await prisma.figurePlan.findUnique({
               where: { id: figureId }
             });
             const latestNodes = asPaperFigureMeta(latestPlan?.nodes);
-            const nextCaption = getPaperFigureCaption(latestNodes, latestPlan?.description || '')
-              || inferredImageMeta?.summary
-              || getPaperFigureCaptionSeed({
-                suggestionMeta: sketchMeta,
-                inferredImageMeta: inferredImageMeta ?? null
-              });
-            await prisma.figurePlan.update({
-              where: { id: figureId },
-              data: {
-                ...(nextCaption ? { description: nextCaption } : {}),
-                nodes: {
-                  ...latestNodes,
-                  caption: nextCaption || latestNodes.caption || '',
-                  inferredImageMeta: inferredImageMeta ?? null
-                } as any
-              }
-            });
+            scheduleStoredPaperFigureMetadataRefresh({
+              requestHeaders,
+              sessionId,
+              figureId,
+              fallbackTitle: data.title,
+              fallbackPrompt: sketchPrompt,
+              fallbackCategory: data.category,
+              fallbackFigureType: data.figureType,
+              overrideSuggestionMeta: sketchMeta
+            }, 'PaperFigureGenerate');
 
             return NextResponse.json({
               success: true,
@@ -1270,7 +1257,8 @@ export async function POST(
                 getPaperFigureImageVersion(latestNodes, sketchResult.imagePath)
               ),
               format: 'png',
-              fileSize: 0 // Sketch service doesn't return file size; client doesn't use it
+              fileSize: 0, // Sketch service doesn't return file size; client doesn't use it
+              metadataQueued: true
             });
           }
 
@@ -1321,16 +1309,6 @@ export async function POST(
       });
     const nextGenerationPrompt = persistedPrompt
       || (!data.modificationRequest ? (data.description || '').trim() : '');
-    const inferredImageMeta = await inferFigureImageMetadata({
-      requestHeaders,
-      imageBase64: result.imageBase64,
-      mimeType: format === 'svg' ? 'image/svg+xml' : format === 'jpg' || format === 'jpeg' ? 'image/jpeg' : 'image/png',
-      title: data.title,
-      caption: captionHint || null,
-      category: data.category,
-      figureType: data.figureType,
-      suggestionMeta: effectiveSuggestionMeta
-    });
     const nextCaption = captionHint
       || inferredImageMeta?.summary
       || getPaperFigureCaptionSeed({
@@ -1394,6 +1372,19 @@ export async function POST(
       }
     });
 
+    if (data.category === 'DIAGRAM') {
+      scheduleStoredPaperFigureMetadataRefresh({
+        requestHeaders,
+        sessionId,
+        figureId,
+        fallbackTitle: data.title,
+        fallbackPrompt: nextGenerationPrompt || undefined,
+        fallbackCategory: data.category,
+        fallbackFigureType: data.figureType,
+        overrideSuggestionMeta: effectiveSuggestionMeta
+      }, 'PaperFigureGenerate');
+    }
+
     console.log(`[PaperFigures] Generated figure: ${filename} (${buffer.length} bytes)`);
 
     return NextResponse.json({
@@ -1401,7 +1392,8 @@ export async function POST(
       imagePath: resolvePaperFigureImageUrl(sessionId, figureId, imagePath, checksum),
       generatedCode: result.generatedCode,
       format,
-      fileSize: buffer.length
+      fileSize: buffer.length,
+      ...(data.category === 'DIAGRAM' ? { metadataQueued: true } : {})
     });
 
   } catch (error) {

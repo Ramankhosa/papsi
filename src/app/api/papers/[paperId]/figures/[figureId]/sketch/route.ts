@@ -11,11 +11,9 @@ import { prisma } from '@/lib/prisma'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { generatePaperSketch, modifyPaperSketch, PaperSketchMode } from '@/lib/figure-generation/paper-sketch-service'
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image'
-import { inferPaperFigureMetadataFromStoredImage } from '@/lib/figure-generation/paper-figure-metadata'
+import { scheduleStoredPaperFigureMetadataRefresh } from '@/lib/figure-generation/paper-figure-metadata-refresh'
 import {
   asPaperFigureMeta,
-  getPaperFigureCaption,
-  getPaperFigureCaptionSeed,
   getPaperFigureImageVersion,
   getPaperFigureStoredImagePath,
 } from '@/lib/figure-generation/paper-figure-record'
@@ -79,85 +77,6 @@ function buildRequestHeaders(request: NextRequest): Record<string, string> {
     requestHeaders[key] = value
   })
   return requestHeaders
-}
-
-async function refreshFigureMetadata(params: {
-  request: NextRequest
-  sessionId: string
-  figureId: string
-  fallbackTitle?: string
-  fallbackPrompt?: string
-  fallbackCategory?: string
-  fallbackFigureType?: string
-  overrideSuggestionMeta?: Record<string, unknown> | null
-}) {
-  const figure = await prisma.figurePlan.findFirst({
-    where: { id: params.figureId, sessionId: params.sessionId }
-  })
-
-  if (!figure) return null
-
-  const nodes = asPaperFigureMeta(figure.nodes)
-  const storedImagePath = getPaperFigureStoredImagePath(nodes)
-  const nextNodes = { ...nodes }
-
-  if (!storedImagePath) {
-    await prisma.figurePlan.update({
-      where: { id: figure.id },
-      data: {
-        nodes: {
-          ...nextNodes,
-          inferredImageMeta: null
-        } as any
-      }
-    })
-    return null
-  }
-
-  const effectiveSuggestionMeta = params.overrideSuggestionMeta
-    || (nodes.suggestionMeta && typeof nodes.suggestionMeta === 'object'
-      ? nodes.suggestionMeta as Record<string, unknown>
-      : null)
-  const currentCaption = getPaperFigureCaption(nextNodes, figure.description || '')
-    || getPaperFigureCaptionSeed({
-      suggestionMeta: effectiveSuggestionMeta,
-      inferredImageMeta: nextNodes.inferredImageMeta || null
-    })
-
-  const inferredImageMeta = await inferPaperFigureMetadataFromStoredImage({
-    requestHeaders: buildRequestHeaders(params.request),
-    imagePath: storedImagePath,
-    title: figure.title || params.fallbackTitle || `Figure ${figure.figureNo}`,
-    caption: currentCaption || null,
-    category: String(nodes.category || params.fallbackCategory || 'ILLUSTRATED_FIGURE'),
-    figureType: String(nodes.figureType || params.fallbackFigureType || 'sketch'),
-    suggestionMeta: effectiveSuggestionMeta
-  })
-
-  const nextCaption = currentCaption
-    || inferredImageMeta?.summary
-    || getPaperFigureCaptionSeed({
-      suggestionMeta: effectiveSuggestionMeta,
-      inferredImageMeta: inferredImageMeta ?? null
-    })
-
-  await prisma.figurePlan.update({
-    where: { id: figure.id },
-    data: {
-      ...(nextCaption ? { description: nextCaption } : {}),
-      nodes: {
-        ...nextNodes,
-        suggestionMeta: effectiveSuggestionMeta,
-        caption: nextCaption || nextNodes.caption || '',
-        generationPrompt: (typeof nextNodes.generationPrompt === 'string' && nextNodes.generationPrompt.trim())
-          ? nextNodes.generationPrompt
-          : params.fallbackPrompt || undefined,
-        inferredImageMeta: inferredImageMeta ?? null
-      } as any
-    }
-  })
-
-  return inferredImageMeta
 }
 
 /**
@@ -241,11 +160,10 @@ export async function POST(
     }
 
     const targetFigureId = result.figureId || (!isNewFigure ? figureId : undefined)
-    let inferredImageMeta = null
     let latestFigure = null
     if (targetFigureId) {
-      inferredImageMeta = await refreshFigureMetadata({
-        request,
+      scheduleStoredPaperFigureMetadataRefresh({
+        requestHeaders: buildRequestHeaders(request),
         sessionId: paperId,
         figureId: targetFigureId,
         fallbackTitle: data.title,
@@ -253,7 +171,7 @@ export async function POST(
         fallbackCategory: 'ILLUSTRATED_FIGURE',
         fallbackFigureType: 'sketch',
         overrideSuggestionMeta: data.suggestionMeta || null
-      })
+      }, 'PaperSketchAPI')
       latestFigure = await getFigureForSession(paperId, targetFigureId)
     }
     const latestNodes = asPaperFigureMeta(latestFigure?.nodes)
@@ -264,7 +182,8 @@ export async function POST(
       success: true,
       figureId: result.figureId,
       imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, latestImagePath, imageVersion),
-      inferredImageMeta
+      inferredImageMeta: null,
+      metadataQueued: true
     })
 
   } catch (error: any) {
@@ -327,15 +246,15 @@ export async function PATCH(
       return NextResponse.json({ error: result.error }, { status: 500 })
     }
 
-    const inferredImageMeta = await refreshFigureMetadata({
-      request,
+    scheduleStoredPaperFigureMetadataRefresh({
+      requestHeaders: buildRequestHeaders(request),
       sessionId: paperId,
       figureId,
       fallbackTitle: figure.title,
       fallbackPrompt: undefined,
       fallbackCategory: String((figure.nodes as any)?.category || 'ILLUSTRATED_FIGURE'),
       fallbackFigureType: String((figure.nodes as any)?.figureType || 'sketch')
-    })
+    }, 'PaperSketchAPI')
     const refreshedFigure = await getFigureForSession(paperId, result.figureId || figureId)
     const refreshedNodes = asPaperFigureMeta(refreshedFigure?.nodes)
     const refreshedImagePath = getPaperFigureStoredImagePath(refreshedNodes) || result.imagePath
@@ -345,7 +264,8 @@ export async function PATCH(
       success: true,
       figureId: result.figureId,
       imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, refreshedImagePath, imageVersion),
-      inferredImageMeta
+      inferredImageMeta: null,
+      metadataQueued: true
     })
 
   } catch (error: any) {

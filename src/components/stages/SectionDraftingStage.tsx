@@ -20,6 +20,7 @@ import PaperMarkdownEditor, {
   type PaperCitationDisplayMeta,
   type PaperFigureDisplayMeta
 } from '@/components/paper/PaperMarkdownEditor';
+import MarkdownRenderer from '@/components/paper/MarkdownRenderer';
 
 // Shared drafting components used by the paper workflow
 import BackendActivityPanel from '@/components/drafting/BackendActivityPanel';
@@ -75,6 +76,31 @@ type SectionCitationValidation = {
   unknownKeys: string[];
 };
 
+type GenerationDebugStep = {
+  step: string;
+  status: 'ok' | 'running' | 'queued' | 'error';
+  label?: string;
+};
+
+type SectionGenerationStatusEvent = {
+  sectionKey?: string;
+  phase?: string;
+  message?: string;
+  at?: string;
+};
+
+type SectionGenerationErrorEvent = {
+  message?: string;
+  status?: number;
+  payload?: any;
+};
+
+type SectionGenerationStreamResult = {
+  ok: boolean;
+  result: any | null;
+  error: SectionGenerationErrorEvent | null;
+};
+
 type ReferenceDraftSectionView = {
   sectionKey: string;
   displayName: string;
@@ -85,6 +111,15 @@ type ReferenceDraftSectionView = {
   generatedAt: string | null;
   source: 'pass1_artifact' | 'base_content_internal' | 'none';
   updatedAt: string | null;
+  figureGrounding: {
+    enabled: boolean;
+    selectedFigureIds: string[];
+    effectiveFigureIds: string[];
+    figureRefs: string[];
+    figureSignature: string;
+    newestFigureUpdatedAt: string | null;
+    waitedForMetadata: boolean;
+  } | null;
 };
 
 type DimensionPlanStatus = 'accepted' | 'pending' | 'todo';
@@ -230,6 +265,69 @@ function createDefaultFigureInjectionPreference(): FigureInjectionPreference {
     enabled: false,
     selectedFigureIds: []
   };
+}
+
+async function readSectionGenerationStream(
+  response: Response,
+  handlers: {
+    onStatus: (payload: SectionGenerationStatusEvent) => void;
+    onError: (payload: SectionGenerationErrorEvent) => void;
+    onResult: (payload: any) => void;
+  }
+): Promise<SectionGenerationStreamResult> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return { ok: false, result: null, error: { message: 'No response stream available' } };
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let ok = false;
+  let resultPayload: any | null = null;
+  let errorPayload: SectionGenerationErrorEvent | null = null;
+
+  const parseChunk = (chunk: string) => {
+    const lines = chunk.split('\n');
+    let event = 'message';
+    const data: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      if (line.startsWith('data:')) data.push(line.slice(5).trim());
+    }
+    if (!data.length) return;
+
+    const payload = JSON.parse(data.join('\n'));
+    if (event === 'status') handlers.onStatus(payload);
+    if (event === 'result') {
+      resultPayload = payload;
+      handlers.onResult(payload);
+    }
+    if (event === 'error') {
+      errorPayload = payload;
+      handlers.onError(payload);
+    }
+    if (event === 'done') {
+      ok = payload?.ok === true;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary >= 0) {
+      parseChunk(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf('\n\n');
+    }
+  }
+
+  if (buffer.trim()) {
+    parseChunk(buffer);
+  }
+
+  return { ok, result: resultPayload, error: errorPayload };
 }
 
 function normalizeDimensionPlanItem(raw: any): DimensionPlanItem {
@@ -500,6 +598,11 @@ function isPass1ExcludedSection(sectionKey: string): boolean {
   return PASS1_EXCLUDED_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
 }
 
+function supportsPass1FigureInjection(sectionKey: string): boolean {
+  const normalized = normalizeSectionKey(sectionKey);
+  return normalized !== 'abstract' && !isPass1ExcludedSection(normalized);
+}
+
 const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi;
 
 function normalizeCitationMarkupForExtraction(content: string): string {
@@ -621,6 +724,7 @@ export default function SectionDraftingStage({
   const [loading, setLoading] = useState(false);
   const [currentKeys, setCurrentKeys] = useState<string[] | null>(null);
   const [sectionLoading, setSectionLoading] = useState<Record<string, boolean>>({});
+  const [sectionStatusMessage, setSectionStatusMessage] = useState<Record<string, string>>({});
   const [mappedEvidenceBySection, setMappedEvidenceBySection] = useState<Record<string, boolean>>({});
   const [citationEligibleBySection, setCitationEligibleBySection] = useState<Record<string, boolean>>({});
 
@@ -639,7 +743,7 @@ export default function SectionDraftingStage({
 
   // UI State
   const [showActivity, setShowActivity] = useState(true);
-  const [debugSteps, setDebugSteps] = useState<any[]>([]);
+  const [debugSteps, setDebugSteps] = useState<GenerationDebugStep[]>([]);
   const [showHelpPanel, setShowHelpPanel] = useState(false);
 
   // User Instructions (loaded from API)
@@ -713,6 +817,7 @@ export default function SectionDraftingStage({
     figureType?: string;
     suggestionMeta?: Record<string, unknown> | null;
     inferredImageMeta?: Record<string, unknown> | null;
+    updatedAt?: string | null;
   }>>([]);
   const [selectedText, setSelectedText] = useState<{ text: string; start: number; end: number } | null>(null);
   const [previewFigure, setPreviewFigure] = useState<{
@@ -749,6 +854,7 @@ export default function SectionDraftingStage({
   const [dimensionBySection, setDimensionBySection] = useState<Record<string, DimensionDraftUIState>>({});
   const [figureInjectionBySection, setFigureInjectionBySection] = useState<Record<string, FigureInjectionPreference>>({});
   const [figurePickerOpenBySection, setFigurePickerOpenBySection] = useState<Record<string, boolean>>({});
+  const [bgFigurePickerOpenBySection, setBgFigurePickerOpenBySection] = useState<Record<string, boolean>>({});
 
   // Regeneration
   const [regenOpen, setRegenOpen] = useState<Record<string, boolean>>({});
@@ -933,6 +1039,12 @@ export default function SectionDraftingStage({
   }, [setFigureInjectionState]);
 
   const buildFigureInjectionPayload = useCallback((sectionKey: string) => {
+    if (!supportsPass1FigureInjection(sectionKey)) {
+      return {
+        useFigures: false,
+        selectedFigureIds: []
+      };
+    }
     const state = getFigureInjectionState(sectionKey);
     const validIds = new Set(selectableFigures.map(figure => figure.id));
     const selectedFigureIds = state.selectedFigureIds.filter(id => validIds.has(id));
@@ -1133,7 +1245,8 @@ export default function SectionDraftingStage({
           category: f.category || f.nodes?.category || 'CHART',
           figureType: f.figureType || f.nodes?.figureType || 'auto',
           suggestionMeta: f.suggestionMeta || f.nodes?.suggestionMeta || null,
-          inferredImageMeta: f.inferredImageMeta || f.nodes?.inferredImageMeta || null
+          inferredImageMeta: f.inferredImageMeta || f.nodes?.inferredImageMeta || null,
+          updatedAt: f.updatedAt || null
         }));
         setFigures(figs);
       }
@@ -1149,6 +1262,7 @@ export default function SectionDraftingStage({
     setBgSelectedSectionKeys([]);
     setFigureInjectionBySection({});
     setFigurePickerOpenBySection({});
+    setBgFigurePickerOpenBySection({});
     setShowReferenceDraftModal(false);
     setReferenceDraftLoading(false);
     setReferenceDraftError(null);
@@ -1184,6 +1298,19 @@ export default function SectionDraftingStage({
     const sectionKeys = Array.isArray(options?.sectionKeys)
       ? Array.from(new Set(options.sectionKeys.map((key) => normalizeSectionKey(String(key || ''))).filter(Boolean)))
       : [];
+    const figureTargetKeys = sectionKeys.length > 0
+      ? sectionKeys
+      : bgSelectedSectionKeys.length > 0
+        ? bgSelectedSectionKeys
+        : (sectionConfigs || fallbackSections)
+            .flatMap(section => section.keys || [])
+            .map(key => normalizeSectionKey(String(key || '')))
+            .filter((key, index, list) => key && !isPass1ExcludedSection(key) && list.indexOf(key) === index);
+    const figureSelections = figureTargetKeys.reduce<Record<string, { useFigures: boolean; selectedFigureIds: string[] }>>((acc, key) => {
+      if (!supportsPass1FigureInjection(key)) return acc;
+      acc[normalizeSectionKey(key)] = buildFigureInjectionPayload(key);
+      return acc;
+    }, {});
     setBgGenRetrying(true);
     try {
       const res = await fetch(`/api/papers/${sessionId}/sections/prepare`, {
@@ -1195,7 +1322,8 @@ export default function SectionDraftingStage({
         body: JSON.stringify({
           ...(force ? { force: true } : {}),
           ...(retryFailedOnly ? { retryFailedOnly: true } : {}),
-          ...(sectionKeys.length > 0 ? { sectionKeys } : {})
+          ...(sectionKeys.length > 0 ? { sectionKeys } : {}),
+          figureSelections
         })
       });
       const data = await res.json();
@@ -1231,7 +1359,7 @@ export default function SectionDraftingStage({
     } finally {
       setBgGenRetrying(false);
     }
-  }, [authToken, bgGenRetrying, loadBgGenStatus, sessionId, showMsg]);
+  }, [authToken, bgGenRetrying, bgSelectedSectionKeys, buildFigureInjectionPayload, loadBgGenStatus, sectionConfigs, sessionId, showMsg]);
 
   const loadReferenceDraftOutput = useCallback(async () => {
     if (!authToken || !sessionId) return;
@@ -1259,7 +1387,26 @@ export default function SectionDraftingStage({
             source: section?.source === 'pass1_artifact' || section?.source === 'base_content_internal'
               ? section.source
               : 'none',
-            updatedAt: section?.updatedAt ? String(section.updatedAt) : null
+            updatedAt: section?.updatedAt ? String(section.updatedAt) : null,
+            figureGrounding: section?.figureGrounding && typeof section.figureGrounding === 'object'
+              ? {
+                  enabled: section.figureGrounding.enabled === true,
+                  selectedFigureIds: Array.isArray(section.figureGrounding.selectedFigureIds)
+                    ? section.figureGrounding.selectedFigureIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
+                    : [],
+                  effectiveFigureIds: Array.isArray(section.figureGrounding.effectiveFigureIds)
+                    ? section.figureGrounding.effectiveFigureIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
+                    : [],
+                  figureRefs: Array.isArray(section.figureGrounding.figureRefs)
+                    ? section.figureGrounding.figureRefs.map((ref: unknown) => String(ref || '').trim()).filter(Boolean)
+                    : [],
+                  figureSignature: String(section.figureGrounding.figureSignature || '').trim(),
+                  newestFigureUpdatedAt: section.figureGrounding.newestFigureUpdatedAt
+                    ? String(section.figureGrounding.newestFigureUpdatedAt)
+                    : null,
+                  waitedForMetadata: section.figureGrounding.waitedForMetadata === true
+                }
+              : null
           } as ReferenceDraftSectionView))
           .filter((section: ReferenceDraftSectionView) => !isPass1ExcludedSection(section.sectionKey))
         : [];
@@ -2170,18 +2317,54 @@ export default function SectionDraftingStage({
   // Generation
   // ============================================================================
 
-  const generateSingleSection = useCallback(async (sectionKey: string): Promise<{ success: boolean; content?: string; error?: string }> => {
+  const upsertGenerationStep = useCallback((phase: string, label?: string, state: GenerationDebugStep['status'] = 'running') => {
+    setDebugSteps(prev => {
+      const next: GenerationDebugStep[] = prev.map(step => (
+        step.step === phase
+          ? { ...step, status: state, label: label || step.label }
+          : (state === 'running' && step.status === 'running' ? { ...step, status: 'ok' as const } : step)
+      ));
+      const existingIndex = next.findIndex(step => step.step === phase);
+      if (existingIndex >= 0) return next;
+      return [...next, { step: phase, status: state, label }];
+    });
+  }, []);
+
+  const completeGenerationSteps = useCallback(() => {
+    setDebugSteps(prev => prev.map<GenerationDebugStep>(step => (
+      step.status === 'running' ? { ...step, status: 'ok' } : step
+    )));
+  }, []);
+
+  const failGenerationSteps = useCallback((label: string) => {
+    setDebugSteps(prev => {
+      const next: GenerationDebugStep[] = prev.map(step => (
+        step.status === 'running' ? { ...step, status: 'error' as const } : step
+      ));
+      return [...next, { step: 'generation_failed', status: 'error', label }];
+    });
+  }, []);
+
+  const runSectionGeneration = useCallback(async (
+    action: 'generate_section' | 'regenerate_section',
+    sectionKey: string,
+    instructions: string
+  ): Promise<{ success: boolean; content?: string; error?: string; data?: any }> => {
+    const normalizedKey = normalizeSectionKey(sectionKey);
+    const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+    const figureInjection = buildFigureInjectionPayload(sectionKey);
+    const generationMode = isPass1ExcludedSection(sectionKey) ? 'topup_final' : 'two_pass';
+
+    setShowActivity(true);
+    setDebugSteps([]);
+    setSectionStatusMessage(prev => ({ ...prev, [normalizedKey]: 'Starting generation...' }));
+
     try {
-      const instr = userInstructions[sectionKey];
-      const instructions = instr?.isActive !== false ? instr?.instruction || '' : '';
-      const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
-      const figureInjection = buildFigureInjectionPayload(sectionKey);
-      const generationMode = isPass1ExcludedSection(sectionKey) ? 'topup_final' : 'two_pass';
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({
-          action: 'generate_section',
+          action,
           sectionKey,
           instructions,
           useMappedEvidence,
@@ -2189,9 +2372,54 @@ export default function SectionDraftingStage({
           generationMode,
           autoCitationRepair: false,
           usePersonaStyle,
-          personaSelection
+          personaSelection,
+          stream: true
         })
       });
+
+      const contentType = res.headers.get('Content-Type') || '';
+      if (contentType.includes('text/event-stream')) {
+        const streamed = await readSectionGenerationStream(
+          res,
+          {
+            onStatus: (payload) => {
+              const phase = String(payload.phase || 'working').trim() || 'working';
+              const message = String(payload.message || 'Working...').trim() || 'Working...';
+              upsertGenerationStep(phase, message, 'running');
+              setSectionStatusMessage(prev => ({ ...prev, [normalizedKey]: message }));
+            },
+            onError: (payload) => {
+              const message = String(payload?.message || 'Generation failed').trim() || 'Generation failed';
+              failGenerationSteps(message);
+              setSectionStatusMessage(prev => ({ ...prev, [normalizedKey]: message }));
+            },
+            onResult: () => {
+              completeGenerationSteps();
+              setSectionStatusMessage(prev => ({ ...prev, [normalizedKey]: 'Finalizing section output...' }));
+            }
+          }
+        );
+
+        if (streamed.ok && streamed.result?.content) {
+          clearCitationValidationForSection(sectionKey);
+          return { success: true, content: streamed.result.content, data: streamed.result };
+        }
+
+        const errorData = streamed.error?.payload || streamed.error || null;
+        const { disallowedKeys: disallowed, unknownKeys: unknown } = setCitationValidationForSection(sectionKey, errorData);
+        const detailParts: string[] = [];
+        if (disallowed.length > 0) {
+          detailParts.push(`disallowed: ${disallowed.slice(0, 5).join(', ')}`);
+        }
+        if (unknown.length > 0) {
+          detailParts.push(`unknown: ${unknown.slice(0, 5).join(', ')}`);
+        }
+        const details = detailParts.length ? ` (${detailParts.join(' | ')})` : '';
+        const hint = typeof errorData?.hint === 'string' ? ` ${errorData.hint}` : '';
+        const message = `${streamed.error?.message || errorData?.error || 'Generation failed'}${details}${hint}`;
+        return { success: false, error: message, data: errorData };
+      }
+
       const data = await res.json();
       if (!res.ok) {
         const { disallowedKeys: disallowed, unknownKeys: unknown } = setCitationValidationForSection(sectionKey, data);
@@ -2204,17 +2432,50 @@ export default function SectionDraftingStage({
         }
         const details = detailParts.length ? ` (${detailParts.join(' | ')})` : '';
         const hint = typeof data?.hint === 'string' ? ` ${data.hint}` : '';
-        return { success: false, error: `${data.error || 'Generation failed'}${details}${hint}` };
+        return { success: false, error: `${data.error || 'Generation failed'}${details}${hint}`, data };
       }
+
       if (data.content) {
         clearCitationValidationForSection(sectionKey);
-        return { success: true, content: data.content };
+        completeGenerationSteps();
+        return { success: true, content: data.content, data };
       }
-      return { success: false, error: 'No content returned' };
+
+      return { success: false, error: 'No content returned', data };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failGenerationSteps(message);
+      return { success: false, error: message };
+    } finally {
+      setSectionStatusMessage(prev => {
+        const next = { ...prev };
+        delete next[normalizedKey];
+        return next;
+      });
+    }
+  }, [
+    authToken,
+    buildFigureInjectionPayload,
+    clearCitationValidationForSection,
+    completeGenerationSteps,
+    failGenerationSteps,
+    isMappedEvidenceEnabled,
+    personaSelection,
+    sessionId,
+    setCitationValidationForSection,
+    upsertGenerationStep,
+    usePersonaStyle
+  ]);
+
+  const generateSingleSection = useCallback(async (sectionKey: string): Promise<{ success: boolean; content?: string; error?: string }> => {
+    try {
+      const instr = userInstructions[sectionKey];
+      const instructions = instr?.isActive !== false ? instr?.instruction || '' : '';
+      return await runSectionGeneration('generate_section', sectionKey, instructions);
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-  }, [sessionId, authToken, userInstructions, usePersonaStyle, personaSelection, isMappedEvidenceEnabled, buildFigureInjectionPayload, setCitationValidationForSection, clearCitationValidationForSection]);
+  }, [runSectionGeneration, userInstructions]);
 
   const handleGenerate = useCallback(async (keys: string[]) => {
     if (loading) return;
@@ -2231,7 +2492,6 @@ export default function SectionDraftingStage({
         setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
         if (result.success && result.content) {
           generatedContent[sectionKey] = result.content;
-          setDebugSteps(prev => [...prev, { step: `generate_${sectionKey}`, status: 'done' }]);
         } else {
           throw new Error(`Failed: ${result.error}`);
         }
@@ -2277,6 +2537,10 @@ export default function SectionDraftingStage({
         setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
         let result = await generateSingleSection(sectionKey);
         if (!result.success && !autoModeCancelledRef.current) {
+          setSectionStatusMessage(prev => ({
+            ...prev,
+            [normalizeSectionKey(sectionKey)]: 'Retrying generation after an unsuccessful attempt...'
+          }));
           await new Promise(r => setTimeout(r, 1000));
           result = await generateSingleSection(sectionKey);
         }
@@ -2305,30 +2569,15 @@ export default function SectionDraftingStage({
 
   const handleRegenerateSection = useCallback(async (sectionKey: string, instructionsOverride?: string) => {
     setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
+    setCurrentKeys([sectionKey]);
+    setShowActivity(true);
     try {
       const remarks = instructionsOverride ?? regenRemarks[sectionKey] ?? '';
-      const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
-      const figureInjection = buildFigureInjectionPayload(sectionKey);
-      const generationMode = isPass1ExcludedSection(sectionKey) ? 'topup_final' : 'two_pass';
-      const res = await fetch(`/api/papers/${sessionId}/drafting`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({
-          action: 'regenerate_section',
-          sectionKey,
-          instructions: remarks,
-          useMappedEvidence,
-          ...figureInjection,
-          generationMode,
-          autoCitationRepair: false,
-          usePersonaStyle,
-          personaSelection
-        })
-      });
-      const data = await res.json();
-      if (res.ok && data.content) {
+      const result = await runSectionGeneration('regenerate_section', sectionKey, remarks);
+      const regeneratedContent = typeof result.content === 'string' ? result.content : '';
+      if (result.success && regeneratedContent) {
         clearCitationValidationForSection(sectionKey);
-        setContent(prev => ({ ...prev, [sectionKey]: data.content }));
+        setContent(prev => ({ ...prev, [sectionKey]: regeneratedContent }));
         setDimensionPanelOpen(prev => {
           const next = { ...prev };
           delete next[normalizeSectionKey(sectionKey)];
@@ -2341,28 +2590,19 @@ export default function SectionDraftingStage({
         });
         // REMOVED: Auto-switch to preview - stay in edit mode
         setRegenOpen(prev => ({ ...prev, [sectionKey]: false }));
-        setRegenRemarks(prev => ({ ...prev, [sectionKey]: '' }));
+        setRegenRemarks(prev => ({ ...(prev || {}), [sectionKey]: '' }));
         showMsg('Section regenerated', 'success');
         await refreshSession();
       } else {
-        const { disallowedKeys: disallowed, unknownKeys: unknown } = setCitationValidationForSection(sectionKey, data);
-        const detailParts: string[] = [];
-        if (disallowed.length > 0) {
-          detailParts.push(`disallowed: ${disallowed.slice(0, 5).join(', ')}`);
-        }
-        if (unknown.length > 0) {
-          detailParts.push(`unknown: ${unknown.slice(0, 5).join(', ')}`);
-        }
-        const details = detailParts.length ? ` (${detailParts.join(' | ')})` : '';
-        const hint = typeof data?.hint === 'string' ? ` ${data.hint}` : '';
-        showMsg(`${data.error || 'Regeneration failed'}${details}${hint}`, 'error');
+        showMsg(result.error || 'Regeneration failed', 'error');
       }
     } catch {
       showMsg('Regeneration failed', 'error');
     } finally {
       setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
+      setCurrentKeys(null);
     }
-  }, [sessionId, authToken, regenRemarks, usePersonaStyle, personaSelection, refreshSession, isMappedEvidenceEnabled, buildFigureInjectionPayload, setCitationValidationForSection, clearCitationValidationForSection]);
+  }, [clearCitationValidationForSection, regenRemarks, refreshSession, runSectionGeneration]);
 
   // ============================================================================
   // Citations & Bibliography
@@ -2631,6 +2871,308 @@ export default function SectionDraftingStage({
 
     return { byNo, signature };
   }, [figures]);
+
+  const formatFigureLabelById = useCallback((figureId: string) => {
+    const figure = figures.find((entry) => entry.id === figureId);
+    if (!figure) return 'Selected figure';
+    return `Figure ${figure.figureNo}`;
+  }, [figures]);
+
+  const getReferenceDraftFigureWarning = useCallback((section: ReferenceDraftSectionView) => {
+    const grounding = section.figureGrounding;
+    if (!grounding?.enabled) {
+      return { stale: false, reasons: [] as string[] };
+    }
+
+    const storedFigureIds = grounding.effectiveFigureIds.length > 0
+      ? grounding.effectiveFigureIds
+      : grounding.selectedFigureIds;
+    const currentPayload = supportsPass1FigureInjection(section.sectionKey)
+      ? buildFigureInjectionPayload(section.sectionKey)
+      : { useFigures: false, selectedFigureIds: [] as string[] };
+    const currentFigureIds = currentPayload.useFigures
+      ? currentPayload.selectedFigureIds
+      : storedFigureIds;
+    const storedSet = new Set(storedFigureIds);
+    const currentSet = new Set(currentFigureIds);
+    const reasons: string[] = [];
+
+    if (currentPayload.useFigures) {
+      const addedFigureLabels = currentFigureIds
+        .filter((figureId) => !storedSet.has(figureId))
+        .map(formatFigureLabelById);
+      const removedFigureLabels = storedFigureIds
+        .filter((figureId) => !currentSet.has(figureId))
+        .map(formatFigureLabelById);
+
+      if (addedFigureLabels.length > 0 || removedFigureLabels.length > 0) {
+        const changes = [
+          addedFigureLabels.length > 0 ? `added: ${addedFigureLabels.join(', ')}` : '',
+          removedFigureLabels.length > 0 ? `removed: ${removedFigureLabels.join(', ')}` : '',
+        ].filter(Boolean).join(' | ');
+        reasons.push(`Figure selection changed since Pass 1 ran${changes ? ` (${changes})` : ''}.`);
+      }
+    }
+
+    const generatedAtMs = Date.parse(String(section.generatedAt || ''));
+    if (Number.isFinite(generatedAtMs) && generatedAtMs > 0) {
+      const updatedFigureLabels = currentFigureIds
+        .filter((figureId) => {
+          const figure = figures.find((entry) => entry.id === figureId);
+          const updatedAtMs = Date.parse(String(figure?.updatedAt || ''));
+          return Number.isFinite(updatedAtMs) && updatedAtMs > generatedAtMs;
+        })
+        .map(formatFigureLabelById);
+
+      if (updatedFigureLabels.length > 0) {
+        reasons.push(`Grounded figure metadata changed after Pass 1 ran: ${updatedFigureLabels.join(', ')}.`);
+      }
+    }
+
+    const missingFigureLabels = storedFigureIds
+      .filter((figureId) => !figures.some((entry) => entry.id === figureId))
+      .map(formatFigureLabelById);
+    if (missingFigureLabels.length > 0) {
+      reasons.push(`Grounded figures are no longer available: ${missingFigureLabels.join(', ')}.`);
+    }
+
+    return {
+      stale: reasons.length > 0,
+      reasons
+    };
+  }, [buildFigureInjectionPayload, figures, formatFigureLabelById]);
+
+  const renderPass1FigureConfigurator = (sectionKey: string) => {
+    if (!supportsPass1FigureInjection(sectionKey)) return null;
+
+    const normalizedKey = normalizeSectionKey(sectionKey);
+    const figureInjectionState = getFigureInjectionState(sectionKey);
+    const sortedFigures = getSortedFiguresForSection(sectionKey);
+    const selectedFigureSet = new Set(figureInjectionState.selectedFigureIds);
+    const selectedFigures = sortedFigures.filter((figure) => selectedFigureSet.has(figure.id));
+    const hasFigureOptions = sortedFigures.length > 0;
+    const recommendedFigureIds = getRecommendedFigureIds(sectionKey);
+    const recommendedFigureCount = recommendedFigureIds.length;
+    const pickerOpen = bgFigurePickerOpenBySection[normalizedKey] === true;
+
+    return (
+      <div key={`pass1-figure-config-${normalizedKey}`} className="rounded-lg border border-slate-200 bg-white px-3 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-slate-700">
+            {displayName[sectionKey] || formatSectionLabel(sectionKey)}
+          </span>
+          <label className={`inline-flex items-center gap-2 text-xs font-medium ${hasFigureOptions ? 'text-slate-700' : 'text-slate-400'}`}>
+            <input
+              type="checkbox"
+              checked={figureInjectionState.enabled}
+              onChange={() => toggleFigureInjection(sectionKey)}
+              disabled={!hasFigureOptions || bgGenRetrying}
+              className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500 disabled:cursor-not-allowed"
+            />
+            <span>Inject figures into Pass 1</span>
+          </label>
+
+          {hasFigureOptions ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setBgFigurePickerOpenBySection(prev => ({
+                  ...prev,
+                  [normalizedKey]: !prev[normalizedKey]
+                }))}
+                disabled={!figureInjectionState.enabled || bgGenRetrying}
+                className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-slate-600 hover:border-violet-300 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {selectedFigures.length > 0 ? `${selectedFigures.length} selected` : 'Choose'}
+              </button>
+              {recommendedFigureCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => applyRecommendedFigureSelection(sectionKey)}
+                  disabled={!figureInjectionState.enabled || bgGenRetrying}
+                  className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-[11px] font-medium text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Recommended
+                </button>
+              )}
+              {selectedFigures.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => clearSelectedFiguresForSection(sectionKey)}
+                  disabled={!figureInjectionState.enabled || bgGenRetrying}
+                  className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-slate-500 hover:border-rose-200 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Clear
+                </button>
+              )}
+              {pickerOpen && (
+                <button
+                  type="button"
+                  onClick={() => setBgFigurePickerOpenBySection(prev => ({
+                    ...prev,
+                    [normalizedKey]: false
+                  }))}
+                  disabled={!figureInjectionState.enabled || bgGenRetrying}
+                  className="rounded-full border border-rose-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Hide
+                </button>
+              )}
+            </>
+          ) : (
+            <span className="text-[11px] text-slate-400">No generated figures available yet</span>
+          )}
+        </div>
+
+        <p className="mt-1 text-[11px] text-slate-500">
+          Pass 1 will receive only the selected figure metadata and must reference them inline as [Figure N].
+        </p>
+
+        {figureInjectionState.enabled && selectedFigures.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {selectedFigures.map((figure) => (
+              <span
+                key={figure.id}
+                className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] text-violet-700"
+              >
+                <span className="font-medium">Fig. {figure.figureNo}</span>
+                <span className="max-w-[180px] truncate">{figure.title}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {figureInjectionState.enabled && pickerOpen && hasFigureOptions && (
+          <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span>Select only the figures this Pass 1 draft should use.</span>
+              <button
+                type="button"
+                onClick={() => selectAllFiguresForSection(sectionKey)}
+                className="rounded-full border border-slate-200 px-2 py-0.5 font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800"
+              >
+                All
+              </button>
+            </div>
+            <div className="space-y-2">
+              {sortedFigures.map((figure) => {
+                const isSelected = selectedFigureSet.has(figure.id);
+                const isRecommended = isFigureRecommendedForSection(figure, sectionKey);
+                const relevantSectionLabel = typeof figure.suggestionMeta?.relevantSection === 'string'
+                  ? figure.suggestionMeta.relevantSection.trim()
+                  : '';
+                const inferredSummary = typeof figure.inferredImageMeta?.summary === 'string'
+                  ? figure.inferredImageMeta.summary.trim()
+                  : '';
+                const helperText = inferredSummary || figure.caption || figure.description || figure.notes || '';
+
+                return (
+                  <label
+                    key={figure.id}
+                    className={`flex cursor-pointer items-start gap-2 rounded-md border px-2 py-2 transition-colors ${
+                      isSelected
+                        ? 'border-violet-300 bg-violet-50/70'
+                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleFigureSelection(sectionKey, figure.id)}
+                      className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs font-semibold text-slate-700">Figure {figure.figureNo}</span>
+                        <span className="text-xs text-slate-600">{figure.title}</span>
+                        {isRecommended && (
+                          <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">
+                            Recommended
+                          </span>
+                        )}
+                        {relevantSectionLabel && (
+                          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                            {relevantSectionLabel}
+                          </span>
+                        )}
+                      </div>
+                      {helperText && (
+                        <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                          {helperText}
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderBgSectionSelector = (headingClassName: string, dividerClassName: string) => {
+    const selectedFigureSections = bgSelectedSectionKeys.filter((sectionKey) => supportsPass1FigureInjection(sectionKey));
+
+    return (
+      <div className={`mt-3 ${dividerClassName} pt-3`}>
+        <p className={`text-xs font-medium ${headingClassName}`}>Run Pass 1 only for selected non-reference sections</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {bgSelectableSections.map(section => (
+            <label
+              key={section.key}
+              className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+            >
+              <input
+                type="checkbox"
+                checked={bgSelectedSectionSet.has(section.key)}
+                onChange={() => toggleBgSectionSelection(section.key)}
+                className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>{section.label}</span>
+            </label>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={selectAllBgSections}
+            className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+          >
+            Select All
+          </button>
+          <button
+            type="button"
+            onClick={clearBgSectionSelection}
+            className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            onClick={() => handleRetryBgPreparation({ force: true, sectionKeys: bgSelectedSectionKeys })}
+            disabled={bgGenRetrying || bgSelectedSectionKeys.length === 0}
+            className="px-3 py-1 text-xs rounded-md border border-indigo-300 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {bgGenRetrying ? 'Preparing...' : 'Run Pass 1 for Selected'}
+          </button>
+        </div>
+
+        {selectedFigureSections.length > 0 && (
+          <div className="mt-4 space-y-3">
+            <div>
+              <p className={`text-xs font-medium ${headingClassName}`}>Optional figure grounding for Pass 1</p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Choose which selected sections should receive generated figure metadata during reference draft creation. Abstract and references are excluded.
+              </p>
+            </div>
+            {selectedFigureSections.map((sectionKey) => renderPass1FigureConfigurator(sectionKey))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const generateBibliography = useCallback(async () => {
     // ── 1. Primary: extract [CITE:key] markers from in-memory content ──
@@ -2959,49 +3501,7 @@ export default function SectionDraftingStage({
             </div>
 
             {bgSectionSelectorOpen && (
-              <div className="mt-3 border-t border-slate-200 pt-3">
-                <p className="text-xs font-medium text-slate-700">Run Pass 1 only for selected non-reference sections</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {bgSelectableSections.map(section => (
-                    <label
-                      key={section.key}
-                      className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={bgSelectedSectionSet.has(section.key)}
-                        onChange={() => toggleBgSectionSelection(section.key)}
-                        className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>{section.label}</span>
-                    </label>
-                  ))}
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllBgSections}
-                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                  >
-                    Select All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearBgSectionSelection}
-                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRetryBgPreparation({ force: true, sectionKeys: bgSelectedSectionKeys })}
-                    disabled={bgGenRetrying || bgSelectedSectionKeys.length === 0}
-                    className="px-3 py-1 text-xs rounded-md border border-indigo-300 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {bgGenRetrying ? 'Preparing...' : 'Run Pass 1 for Selected'}
-                  </button>
-                </div>
-              </div>
+              renderBgSectionSelector('text-slate-700', 'border-t border-slate-200')
             )}
           </div>
         )}
@@ -3103,51 +3603,10 @@ export default function SectionDraftingStage({
             </div>
 
             {bgSectionSelectorOpen && (
-              <div className="mt-3 border-t border-white/60 pt-3">
-                <p className={`text-xs font-medium ${bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800'}`}>
-                  Run Pass 1 only for selected non-reference sections
-                </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {bgSelectableSections.map(section => (
-                    <label
-                      key={section.key}
-                      className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={bgSelectedSectionSet.has(section.key)}
-                        onChange={() => toggleBgSectionSelection(section.key)}
-                        className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>{section.label}</span>
-                    </label>
-                  ))}
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllBgSections}
-                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                  >
-                    Select All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearBgSectionSelection}
-                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRetryBgPreparation({ force: true, sectionKeys: bgSelectedSectionKeys })}
-                    disabled={bgGenRetrying || bgSelectedSectionKeys.length === 0}
-                    className="px-3 py-1 text-xs rounded-md border border-indigo-300 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {bgGenRetrying ? 'Preparing...' : 'Run Pass 1 for Selected'}
-                  </button>
-                </div>
-              </div>
+              renderBgSectionSelector(
+                bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800',
+                'border-t border-white/60'
+              )
             )}
           </div>
         )}
@@ -3194,49 +3653,7 @@ export default function SectionDraftingStage({
             </div>
 
             {bgSectionSelectorOpen && (
-              <div className="mt-3 border-t border-red-200 pt-3">
-                <p className="text-xs font-medium text-red-800">Run Pass 1 only for selected non-reference sections</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {bgSelectableSections.map(section => (
-                    <label
-                      key={section.key}
-                      className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={bgSelectedSectionSet.has(section.key)}
-                        onChange={() => toggleBgSectionSelection(section.key)}
-                        className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>{section.label}</span>
-                    </label>
-                  ))}
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllBgSections}
-                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                  >
-                    Select All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearBgSectionSelection}
-                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRetryBgPreparation({ force: true, sectionKeys: bgSelectedSectionKeys })}
-                    disabled={bgGenRetrying || bgSelectedSectionKeys.length === 0}
-                    className="px-3 py-1 text-xs rounded-md border border-indigo-300 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {bgGenRetrying ? 'Preparing...' : 'Run Pass 1 for Selected'}
-                  </button>
-                </div>
-              </div>
+              renderBgSectionSelector('text-red-800', 'border-t border-red-200')
             )}
           </div>
         )}
@@ -3245,7 +3662,7 @@ export default function SectionDraftingStage({
         {showActivity && (currentKeys || autoModeRunning) && (
           <div className="absolute top-4 right-4 z-10">
             <BackendActivityPanel isVisible={true} onClose={() => setShowActivity(false)}
-              steps={(debugSteps || []).map((s: any) => ({ id: String(s.step || ''), state: s.status === 'fail' ? 'error' : (s.status || 'running') }))} />
+              steps={(debugSteps || []).map((s) => ({ id: String(s.step || ''), state: s.status, label: s.label }))} />
         </div>
         )}
 
@@ -3256,6 +3673,12 @@ export default function SectionDraftingStage({
             const isWorking = isGenerating || isRegenerating;
             const isSavingSection = section.keys.some(k => saving[k]);
             const hasPending = section.keys.some(k => pendingChanges.has(k));
+            const activeStatusKey = section.keys.find((key) => (
+              sectionLoading[key] || Boolean(currentKeys?.includes(key))
+            ));
+            const activeStatusMessage = activeStatusKey
+              ? sectionStatusMessage[normalizeSectionKey(activeStatusKey)] || ''
+              : '';
             const primarySectionKey = section.keys[0] || '';
             const primaryDimensionState = primarySectionKey ? getDimensionState(primarySectionKey) : createInitialDimensionUIState();
             const primarySupportsDimensionFlow = primarySectionKey ? supportsDimensionFlow(primarySectionKey) : false;
@@ -3306,6 +3729,13 @@ export default function SectionDraftingStage({
                           void generateDimensionDraft(primarySectionKey, { dimensionKey });
                         }}
                       />
+                    )}
+
+                    {isWorking && activeStatusMessage && (
+                      <div className="mt-1 inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] text-indigo-700">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        <span>{activeStatusMessage}</span>
+                      </div>
                     )}
 
                     {sectionCitationIssue && (() => {
@@ -3363,6 +3793,7 @@ export default function SectionDraftingStage({
                     const autoCitationEnabled = autoCitationAvailable ? isMappedEvidenceEnabled(keyName) : false;
                     const instruction = userInstructions[keyName];
                     const instructionActive = Boolean(instruction?.instruction) && instruction?.isActive !== false;
+                    const sectionSupportsFigureGrounding = supportsPass1FigureInjection(keyName);
                     const figureInjectionState = getFigureInjectionState(keyName);
                     const sortedFigures = getSortedFiguresForSection(keyName);
                     const selectedFigureSet = new Set(figureInjectionState.selectedFigureIds);
@@ -3443,6 +3874,7 @@ export default function SectionDraftingStage({
                           </div>
                         )}
 
+                        {sectionSupportsFigureGrounding && (
                         <div className="mb-2 rounded-lg border border-slate-200/80 bg-slate-50/70 px-3 py-2">
                           <div className="flex flex-wrap items-center gap-2">
                             <label className={`inline-flex items-center gap-2 text-xs font-medium ${hasFigureOptions ? 'text-slate-700' : 'text-slate-400'}`}>
@@ -3589,6 +4021,7 @@ export default function SectionDraftingStage({
                             </div>
                           )}
                         </div>
+                        )}
 
                         <div className="relative">
                           <PaperMarkdownEditor
@@ -3932,42 +4365,95 @@ export default function SectionDraftingStage({
                     </div>
                 )}
 
-                {referenceDraftSections.map((section) => (
-                  <div key={section.sectionKey} className="rounded-lg border border-slate-200 overflow-hidden">
-                    <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="text-sm font-semibold text-slate-800">{section.displayName}</h4>
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                          section.hasContent
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            : 'bg-slate-100 text-slate-600 border-slate-200'
-                        }`}>
-                          {section.hasContent ? 'Pass 1 Ready' : 'No Pass 1 Output'}
-                        </span>
-                        <span className="text-[10px] px-2 py-0.5 rounded-full border border-slate-200 bg-white text-slate-600">
-                          {section.wordCount} words
-                        </span>
-                        <span className="text-[10px] px-2 py-0.5 rounded-full border border-slate-200 bg-white text-slate-500">
-                          status: {section.status}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        generated: {formatDateTime(section.generatedAt)} {section.source !== 'none' ? ` • source: ${section.source}` : ''}
-                      </p>
-                    </div>
-                    <div className="p-4 bg-white">
-                      {section.content ? (
-                        <pre className="whitespace-pre-wrap break-words text-[13px] leading-6 text-slate-800 font-sans">
-                          {section.content}
-                        </pre>
-                      ) : (
-                        <p className="text-sm text-slate-500 italic">
-                          Pass 1 output not generated for this section yet.
+                {referenceDraftSections.map((section) => {
+                  const figureWarning = getReferenceDraftFigureWarning(section);
+                  const figureRefs = section.figureGrounding?.figureRefs || [];
+
+                  return (
+                    <div key={section.sectionKey} className="rounded-lg border border-slate-200 overflow-hidden">
+                      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h4 className="text-sm font-semibold text-slate-800">{section.displayName}</h4>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                            section.hasContent
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-slate-100 text-slate-600 border-slate-200'
+                          }`}>
+                            {section.hasContent ? 'Pass 1 Ready' : 'No Pass 1 Output'}
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full border border-slate-200 bg-white text-slate-600">
+                            {section.wordCount} words
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full border border-slate-200 bg-white text-slate-500">
+                            status: {section.status}
+                          </span>
+                          {section.figureGrounding?.enabled && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full border border-violet-200 bg-violet-50 text-violet-700">
+                              Grounded with figures
+                            </span>
+                          )}
+                          {figureWarning.stale && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700">
+                              Figure-aware Pass 1 is stale
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          generated: {formatDateTime(section.generatedAt)} {section.source !== 'none' ? ` • source: ${section.source}` : ''}
                         </p>
-                      )}
+                        {section.figureGrounding?.enabled && (
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            {figureRefs.map((figureRef) => (
+                              <span
+                                key={`${section.sectionKey}-${figureRef}`}
+                                className="inline-flex items-center rounded-full border border-violet-200 bg-white px-2 py-0.5 text-[10px] font-medium text-violet-700"
+                              >
+                                {figureRef}
+                              </span>
+                            ))}
+                            {section.figureGrounding.waitedForMetadata && (
+                              <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-600">
+                                waited for sketch metadata
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-4 bg-white">
+                        {figureWarning.stale && (
+                          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                            <div className="font-medium">This Pass 1 draft may be outdated.</div>
+                            <ul className="mt-1 list-disc space-y-1 pl-4">
+                              {figureWarning.reasons.map((reason) => (
+                                <li key={`${section.sectionKey}-${reason}`}>{reason}</li>
+                              ))}
+                            </ul>
+                            <button
+                              type="button"
+                              onClick={() => void handleRetryBgPreparation({ force: true, sectionKeys: [section.sectionKey] })}
+                              disabled={bgGenRetrying}
+                              className="mt-2 rounded-md border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {bgGenRetrying ? 'Preparing...' : 'Regenerate Pass 1 for this section'}
+                            </button>
+                          </div>
+                        )}
+
+                        {section.content ? (
+                          <MarkdownRenderer
+                            content={section.content}
+                            figureDisplayMeta={figureDisplayMeta}
+                            className="!my-0"
+                          />
+                        ) : (
+                          <p className="text-sm text-slate-500 italic">
+                            Pass 1 output not generated for this section yet.
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </motion.div>
           </motion.div>

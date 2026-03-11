@@ -75,9 +75,9 @@ const DEFAULT_FLAGS: FeatureFlags = {
 
   // Paper Writing Upgrade (SRS V2)
   ENABLE_ARGUMENT_PLAN: false, // Tier 2 — disabled until ArgumentPlan service is ready
-  ENABLE_CITATION_BUDGET_VALIDATOR: true, // Tier 1 — post-draft citation budget enforcement
+  ENABLE_CITATION_BUDGET_VALIDATOR: true, // Tier 1 — citation-density lint only; no rewrite loop
   ENABLE_RHETORICAL_BLUEPRINT: true, // Tier 3 — prompt-level rhetorical blueprint injection
-  ENABLE_RHETORICAL_COMPOSER_PASS2B: true, // Tier 3 — rhetorical repair pass after Pass-2A polish
+  ENABLE_RHETORICAL_COMPOSER_PASS2B: false, // Tier 3 — disabled; prompt guidance remains but no post-polish rewrite
 
   // Migration Flags - Patent drafting disabled (paper-only mode)
   DISABLE_PATENT_DRAFTING: true,

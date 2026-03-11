@@ -20,7 +20,6 @@ import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import type { TenantContext } from '@/lib/metering';
 import { researchIntentLockService, type ResearchIntentLock } from '@/lib/services/research-intent-lock-service';
 import { buildRhetoricalPromptBlock, type RhetoricalBlueprint } from '@/lib/services/rhetorical-blueprint-service';
-import { rhetoricalComposerService } from '@/lib/services/rhetorical-composer-service';
 import { systemPromptTemplateService, TEMPLATE_KEYS } from '@/lib/services/system-prompt-template-service';
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
 import {
@@ -3953,15 +3952,22 @@ async function generateSection(
       dimensionLabel: dim.dimension,
       expectedCitationKeys: (dim.citations || []).map(c => String(c.citationKey || '').trim()).filter(Boolean),
     }));
-    const runPolish = () => sectionPolishService.polishWithRetry({
-      sectionKey,
-      displayName: sectionRecord?.displayName || formatSectionLabel(sectionKey),
-      baseContent: pass1Content!,
-      sessionId,
-      paperTypeCode,
-      tenantContext: tenantContext || null,
-      dimensionCitations: dimensionCitations.length > 0 ? dimensionCitations : undefined,
-    });
+    const runPolish = () => sectionPolishService.polishWithRetry(
+      {
+        sectionKey,
+        displayName: sectionRecord?.displayName || formatSectionLabel(sectionKey),
+        baseContent: pass1Content!,
+        sessionId,
+        paperTypeCode,
+        tenantContext: tenantContext || null,
+        dimensionCitations: dimensionCitations.length > 0 ? dimensionCitations : undefined,
+      },
+      {
+        onRetry: async (notice) => {
+          await emitStatus?.('llm_retry', notice.message);
+        }
+      }
+    );
     let polishResult = await runPolish();
 
     if (!polishResult.success || !polishResult.polishedContent) {
@@ -3969,6 +3975,7 @@ async function generateSection(
         sectionKey,
         error: polishResult.error
       });
+      await emitStatus?.('llm_retry', 'Retrying publication polish after an unsuccessful attempt.');
       await sleep(800);
       polishResult = await runPolish();
     }
@@ -4046,84 +4053,6 @@ async function generateSection(
     llmTokensUsed = result.response.outputTokens;
     const rawOutput = (result.response.output || '').trim();
     rawContent = extractSectionOutput(rawOutput).content;
-  }
-
-  if (
-    rawContent
-    && isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
-    && isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
-    && blueprintPromptContext?.rhetoricalBlueprint?.enabled
-  ) {
-    try {
-      const preRhetoricalContent = rawContent;
-      const preRhetoricalPass2Prompt = pass2PromptUsed;
-      const rhetoricalResult = await rhetoricalComposerService.applyPass2B({
-        sessionId,
-        sectionKey,
-        content: rawContent,
-        rhetoricalBlueprint: blueprintPromptContext.rhetoricalBlueprint,
-        researchIntentLock: blueprintPromptContext.researchIntentLock || null,
-        fallbackContributions: blueprintPromptContext.keyContributions || [],
-        evidenceDigestSummary: formatEvidenceDigest(evidencePromptContext.evidenceDigest),
-        tenantContext: tenantContext || null,
-        requestHeaders
-      });
-
-      const rolledBack = !rhetoricalResult.validation.passed;
-      if (!rolledBack && rhetoricalResult.content) {
-        rawContent = rhetoricalResult.content;
-      } else {
-        rawContent = preRhetoricalContent;
-      }
-
-      if (!rolledBack && rhetoricalResult.promptUsed && useTwoPassPipeline) {
-        pass2PromptUsed = rhetoricalResult.promptUsed;
-      } else if (useTwoPassPipeline) {
-        pass2PromptUsed = preRhetoricalPass2Prompt;
-      }
-
-      if (rhetoricalResult.tokensUsed) {
-        pass2TokensUsed = Number(pass2TokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
-        llmTokensUsed = Number(llmTokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
-      }
-
-      const rhetoricalValidation = {
-        enabled: true,
-        pass2bApplied: true,
-        rolledBack,
-        retries: rhetoricalResult.retries,
-        passed: rhetoricalResult.validation.passed,
-        violations: rhetoricalResult.validation.violations,
-        inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs,
-        requiredSlotsChecked: rhetoricalResult.validation.requiredSlotsChecked,
-        slotViolations: rhetoricalResult.validation.slotViolations
-      };
-      const currentValidation = (
-        mergedValidationReport
-        && typeof mergedValidationReport === 'object'
-        && !Array.isArray(mergedValidationReport)
-      )
-        ? mergedValidationReport as Record<string, unknown>
-        : (
-          pass2ValidationReport
-          && typeof pass2ValidationReport === 'object'
-          && !Array.isArray(pass2ValidationReport)
-        )
-          ? pass2ValidationReport as Record<string, unknown>
-          : {};
-      mergedValidationReport = {
-        ...currentValidation,
-        rhetoricalValidation
-      };
-      if (!rhetoricalResult.validation.passed) {
-        console.warn('[PaperDrafting] Rhetorical validation failed after retries; reverting to pre-rhetorical content', {
-          sectionKey,
-          violations: rhetoricalResult.validation.violations
-        });
-      }
-    } catch (error) {
-      console.warn('[PaperDrafting] Rhetorical composer failed (non-fatal):', error);
-    }
   }
 
   if (!rawContent?.trim()) {
@@ -4809,87 +4738,6 @@ async function executeDraftSectionPrompt(params: {
     output: String(result.response.output || '').trim(),
     outputTokens: result.response.outputTokens
   };
-}
-
-function extractCitationKeySet(content: string): Set<string> {
-  const { keys } = citationValidator.countCitesInText(String(content || ''));
-  return new Set(
-    keys
-      .map((key) => String(key || '').trim())
-      .filter(Boolean)
-  );
-}
-
-async function enforceCitationBudgetValidatorForPass1(params: {
-  sessionId: string;
-  sectionKey: string;
-  content: string;
-  headers: Record<string, string>;
-  tenantContext?: TenantContext | null;
-  evidencePromptContext: EvidencePromptContext;
-}): Promise<string> {
-  if (!isFeatureEnabled('ENABLE_CITATION_BUDGET_VALIDATOR')) {
-    return params.content;
-  }
-
-  let currentContent = polishDraftMarkdown(String(params.content || '').trim());
-  if (!currentContent) {
-    return currentContent;
-  }
-
-  const initialCitationKeys = extractCitationKeySet(currentContent);
-  const mustCiteKeys = (params.evidencePromptContext?.evidenceDigest?.mustCiteKeys || [])
-    .map((key) => String(key || '').trim())
-    .filter((key) => key && initialCitationKeys.has(key));
-  let report = citationValidator.validate(currentContent, { mustCiteKeys });
-  const maxRewriteAttempts = 2;
-
-  for (let attempt = 1; attempt <= maxRewriteAttempts && !report.passed; attempt++) {
-    const rewritePrompt = `${citationValidator.buildRewritePrompt(currentContent, report)}
-
-ADDITIONAL HARD RULES:
-- Do NOT introduce any new [CITE:key] markers that were not present in the ORIGINAL DRAFT.
-- Reduce citation density only by removing or redistributing existing citation markers in violating paragraphs.
-- Preserve meaning, factual claims, and paragraph order.
-- Return ONLY corrected markdown content.`;
-
-    const rewriteResult = await executeDraftSectionPrompt({
-      sessionId: params.sessionId,
-      sectionKey: params.sectionKey,
-      prompt: rewritePrompt,
-      headers: params.headers,
-      tenantContext: params.tenantContext,
-      purpose: 'paper_section_pass1_citation_budget_rewrite',
-      temperature: 0.2,
-      stageCode: 'PAPER_SECTION_DRAFT'
-    });
-
-    const rewritten = extractSectionOutput(rewriteResult.output).content;
-    if (!rewritten) {
-      break;
-    }
-
-    const rewrittenKeys = extractCitationKeySet(rewritten);
-    const introducedNewKey = Array.from(rewrittenKeys).some((key) => !initialCitationKeys.has(key));
-    if (introducedNewKey) {
-      console.warn(
-        `[PaperDrafting] Citation rewrite introduced new keys for ${params.sectionKey}; discarding attempt ${attempt}.`
-      );
-      continue;
-    }
-
-    currentContent = rewritten;
-    report = citationValidator.validate(currentContent, { mustCiteKeys });
-  }
-
-  if (!report.passed) {
-    console.warn(
-      `[PaperDrafting] Citation budget validator still reports violations for ${params.sectionKey} after rewrites.`,
-      report.rewriteDirectives
-    );
-  }
-
-  return currentContent;
 }
 
 function resolveRequiredCitationKeys(

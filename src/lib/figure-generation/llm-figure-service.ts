@@ -15,6 +15,10 @@
 
 import { llmGateway } from '@/lib/metering/gateway'
 import type { TaskCode } from '@prisma/client'
+import {
+  coercePaperFigureInferenceMeta,
+  type PaperFigureInferenceMeta
+} from './paper-figure-metadata'
 import type {
   FigureCategory,
   DataChartType,
@@ -89,6 +93,7 @@ export interface ChartGenerationResult {
     }
     options?: Record<string, any>
   }
+  inferredMeta?: PaperFigureInferenceMeta | null
   error?: string
   tokensUsed?: number
   model?: string
@@ -240,16 +245,70 @@ FAIL FAST:
 If requested figure type conflicts with section rules, propose the closest academically correct alternative for that section and state missing data/spec needed.
 `
 
+const PAPER_FIGURE_METADATA_OUTPUT_GUIDE = `{
+  "summary": "1-2 sentence figure summary grounded in the supplied data and intended chart",
+  "visibleElements": ["up to 8 concrete visual elements expected in the final chart"],
+  "visibleText": ["up to 10 labels expected to be visible, such as axes, legend entries, category labels, or annotations"],
+  "keyVariables": ["up to 8 variables, metrics, axes, or entities represented"],
+  "comparedGroups": ["up to 8 methods, conditions, cohorts, categories, or series being compared"],
+  "numericHighlights": ["up to 8 exact values, ranges, percentages, counts, or ranks taken directly from the supplied data"],
+  "observedPatterns": ["up to 8 direct trends, contrasts, rankings, peaks, lows, or distributions implied by the supplied data"],
+  "resultDetails": ["up to 8 concise, result-safe observations the Results section may report"],
+  "methodologyDetails": ["up to 8 setup details only if the chart structure itself makes them explicit"],
+  "discussionCues": ["up to 8 restrained interpretation cues, anomalies, caveats, or implications suggested by the data"],
+  "chartSignals": ["up to 8 direct chart signals such as upward trends, separation, clustering, spread, or imbalance"],
+  "claimsSupported": ["up to 8 conservative claims directly supported by the supplied data and intended chart"],
+  "claimsToAvoid": ["up to 8 claims that would overreach the supplied data or chart alone"]
+}`
+
+function summarizeChartPromptComplexity(request: ChartGenerationRequest): string[] {
+  const notes: string[] = []
+  const labelsCount = Array.isArray(request.data?.labels) ? request.data.labels.length : 0
+  const datasetCount = Array.isArray(request.data?.datasets) ? request.data.datasets.length : 0
+  const pointDatasetCount = Array.isArray(request.data?.pointDatasets) ? request.data.pointDatasets.length : 0
+  const maxSeriesLength = Array.isArray(request.data?.datasets)
+    ? Math.max(0, ...request.data.datasets.map((dataset) => Array.isArray(dataset.data) ? dataset.data.length : 0))
+    : 0
+  const pointCount = Array.isArray(request.data?.pointDatasets)
+    ? request.data.pointDatasets.reduce((sum, dataset) => sum + (Array.isArray(dataset.data) ? dataset.data.length : 0), 0)
+    : 0
+  const errorSeriesCount = Array.isArray(request.data?.datasets)
+    ? request.data.datasets.filter((dataset) => Array.isArray(dataset.errors) && dataset.errors.length > 0).length
+    : 0
+
+  if (labelsCount > 0) notes.push(`- Category labels: ${labelsCount}`)
+  if (datasetCount > 0) notes.push(`- Numeric datasets/series: ${datasetCount} (max ${maxSeriesLength} values per series)`)
+  if (pointDatasetCount > 0) notes.push(`- Point datasets: ${pointDatasetCount} (${pointCount} total points)`)
+  if (errorSeriesCount > 0) notes.push(`- Uncertainty/error arrays present in ${errorSeriesCount} series`)
+  if (request.rawDataText?.trim()) {
+    const rawLines = request.rawDataText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).length
+    notes.push(`- Raw numeric/request text lines: ${rawLines}`)
+  }
+
+  if (labelsCount > 12) {
+    notes.push('- Dense category axis: preserve every label; adapt with horizontal bars, rotated ticks, or compact label handling instead of dropping labels.')
+  }
+  if (datasetCount > 4) {
+    notes.push('- Multi-series comparison is dense: preserve all series and reduce ornamentation rather than simplifying the data.')
+  }
+  if (pointCount > 40) {
+    notes.push('- Dense point cloud: keep all points; reduce marker size or opacity instead of filtering.')
+  }
+
+  return notes
+}
+
 const CHART_GENERATION_PROMPT = `${SECTION_AWARE_ACADEMIC_FIGURE_POLICY}
 
 You are an expert data visualization designer specializing in publication-quality academic figures.
 
-Your task: generate a valid Chart.js configuration object that produces a BEAUTIFUL, ACCURATE, PUBLICATION-READY chart.
+Your task: generate a valid Chart.js configuration object that produces an accurate, publication-ready chart and return drafting metadata in the same response.
 
 CRITICAL RULES:
 1. Return ONLY valid JSON. No markdown fences, no explanation, no comments in the JSON.
 2. NEVER invent or hallucinate data. Use only the exact numeric values and labels provided in the request. Do not fabricate placeholder series, placeholder labels, or synthetic results.
 2a. If the request includes raw CSV, TSV, JSON, x/y rows, pasted metrics, or lightly messy table text, normalize that content into the chart config using the exact values present in the request.
+2b. Preserve every provided category, row, series, point, and legend entry. Never drop, merge, downsample, reorder, or aggregate data unless the request explicitly asks for it.
 3. The chart MUST have:
    - Properly labeled axes with units where applicable (e.g., "Accuracy (%)", "Time (seconds)")
    - A legend with descriptive dataset labels
@@ -269,10 +328,21 @@ CRITICAL RULES:
    - prioritize baseline vs proposed comparisons and uncertainty-ready layouts
    - avoid visually misleading scaling, clutter, or exaggerated contrast
 14. If chartSpec is provided, follow chartSpec axis labels and field mappings exactly.
+15. Respect any DATA COMPLEXITY / PRESERVATION SIGNALS in the prompt. Adapt label rotation, orientation, font sizes, and legend placement to keep all supplied data visible.
+16. If labels are long or numerous, prefer horizontal bars or rotated ticks over truncation. If the plot is dense, simplify styling, not data.
+17. If values span positive and negative ranges, do not force an artificial zero baseline that distorts the comparison.
+
+METADATA RULES:
+- Return a top-level "metadata" object with this exact shape: ${PAPER_FIGURE_METADATA_OUTPUT_GUIDE}
+- The metadata must be derived from the supplied data, labels, chartSpec, and intended rendered chart. No second-pass image verification is available.
+- Assume the final chart will visibly contain the axes, legend labels, category labels, and annotations defined in your config.
+- "numericHighlights" must quote exact values, ranges, percentages, counts, or ranks from the supplied data.
+- "observedPatterns", "resultDetails", and "claimsSupported" must stay conservative and strictly proportional to the supplied data.
+- "claimsToAvoid" must block causal, significance, generalization, or performance claims not proven by the supplied data alone.
 
 OUTPUT FORMAT (return ONLY this JSON):
 {
-  "type": "bar|line|pie|scatter|radar|doughnut",
+  "type": "bar|horizontalBar|line|scatter|bubble|pie|doughnut|radar|polarArea",
   "data": {
     "labels": ["Label1", "Label2", ...],
     "datasets": [{
@@ -293,7 +363,8 @@ OUTPUT FORMAT (return ONLY this JSON):
       "y": { "beginAtZero": true, "title": { "display": true, "text": "Y-Axis Label", "font": { "size": 13 } }, "grid": { "color": "#E5E7EB" }, "ticks": { "font": { "size": 11 } } },
       "x": { "title": { "display": true, "text": "X-Axis Label", "font": { "size": 13 } }, "grid": { "color": "#E5E7EB" }, "ticks": { "font": { "size": 11 } } }
     }
-  }
+  },
+  "metadata": ${PAPER_FIGURE_METADATA_OUTPUT_GUIDE}
 }
 
 IMPORTANT: For pie, doughnut, radar, and polarArea charts, do NOT include the "scales" key in options.
@@ -2410,6 +2481,11 @@ export async function generateChartConfig(
         throw new Error('Publication-quality chart generation requires structured numeric data.')
       }
 
+      const complexityNotes = summarizeChartPromptComplexity(request)
+      if (complexityNotes.length > 0) {
+        userRequest += `\n\nDATA COMPLEXITY / PRESERVATION SIGNALS:\n${complexityNotes.join('\n')}`
+      }
+
       if (request.style) {
         userRequest += `\n\nStyle preference: ${request.style}`
       }
@@ -2440,9 +2516,21 @@ export async function generateChartConfig(
       // Parse and validate the JSON response
       const cleanedResponse = extractJSON(response)
       let config: any
+      let inferredMeta: PaperFigureInferenceMeta | null = null
 
       try {
-        config = JSON.parse(cleanedResponse)
+        const parsedResponse = JSON.parse(cleanedResponse)
+        inferredMeta = coercePaperFigureInferenceMeta(
+          parsedResponse?.metadata,
+          new Date().toISOString(),
+          model
+        )
+        config = parsedResponse?.config && typeof parsedResponse.config === 'object' && !Array.isArray(parsedResponse.config)
+          ? parsedResponse.config
+          : parsedResponse
+        if (config && typeof config === 'object' && !Array.isArray(config)) {
+          delete config.metadata
+        }
       } catch (parseError) {
         lastError = 'Invalid JSON syntax - could not parse the response'
         console.warn(`[LLMFigureService] Chart JSON parse failed (attempt ${attempt + 1}/${MAX_CHART_RETRIES + 1}):`, cleanedResponse.slice(0, 300))
@@ -2468,6 +2556,7 @@ export async function generateChartConfig(
       return {
         success: true,
         config: validation.config,
+        inferredMeta,
         tokensUsed: totalTokensUsed,
         model
       }
