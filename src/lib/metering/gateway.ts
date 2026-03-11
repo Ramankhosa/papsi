@@ -80,7 +80,8 @@ export class LLMGateway {
         taskCode: llmRequest.taskCode,
         userId: tenantContext.userId,
         metadata: {
-          idempotencyKey: llmRequest.idempotencyKey || crypto.randomUUID()
+          idempotencyKey: llmRequest.idempotencyKey || crypto.randomUUID(),
+          stageCode: llmRequest.stageCode
         }
       }
 

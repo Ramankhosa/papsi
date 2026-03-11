@@ -5,6 +5,12 @@ import type { MeteringConfig, ReservationService, MeteringContext } from './type
 import { MeteringErrorUtils, MeteringError } from './errors'
 import { prisma } from '@/lib/prisma'
 
+const STAGE_CONCURRENCY_OVERRIDES: Record<string, number> = {
+  PAPER_MANUSCRIPT_REVIEW_CONTEXT_SUMMARY: 10,
+  PAPER_MANUSCRIPT_REVIEW: 10,
+  PAPER_MANUSCRIPT_IMPROVE: 10,
+}
+
 const CONCURRENCY_CACHE_TTL_MS = 30_000
 const FEATURE_ID_CACHE_TTL_MS = 10 * 60 * 1000
 
@@ -93,7 +99,11 @@ export function createReservationService(config: MeteringConfig): ReservationSer
         // Check concurrency limits
         if (context.taskCode) {
           const activeCount = await this.getActiveReservations(context.tenantId, context.taskCode)
-          const concurrencyLimit = await this.getConcurrencyLimit(context.tenantId, context.taskCode)
+          const concurrencyLimit = await this.getConcurrencyLimit(
+            context.tenantId,
+            context.taskCode,
+            context.metadata?.stageCode
+          )
 
           if (activeCount >= concurrencyLimit) {
             throw new MeteringError('CONCURRENCY_LIMIT',
@@ -162,9 +172,10 @@ export function createReservationService(config: MeteringConfig): ReservationSer
       }
     },
 
-    async getConcurrencyLimit(tenantId: string, taskCode?: string): Promise<number> {
+    async getConcurrencyLimit(tenantId: string, taskCode?: string, stageCode?: string): Promise<number> {
       try {
-        const cacheKey = `${tenantId}::${String(taskCode || '*')}`
+        const normalizedStageCode = String(stageCode || '').trim().toUpperCase()
+        const cacheKey = `${tenantId}::${String(taskCode || '*')}::${normalizedStageCode || '*'}`
         const cachedLimit = getCachedConcurrencyLimit(cacheKey)
         if (cachedLimit !== null) {
           return cachedLimit
@@ -202,12 +213,26 @@ export function createReservationService(config: MeteringConfig): ReservationSer
           orderBy: { scope: 'desc' } // tenant overrides plan
         })
 
-        const limit = concurrencyRule?.value || 5 // Default concurrency limit (safe for LLM provider rate limits)
-        setCachedConcurrencyLimit(cacheKey, limit)
-        return limit
+        const baseLimit = concurrencyRule?.value || 5 // Default concurrency limit (safe for LLM provider rate limits)
+        const overrideLimit = taskCode === 'LLM2_DRAFT'
+          ? STAGE_CONCURRENCY_OVERRIDES[normalizedStageCode]
+          : undefined
+        const effectiveLimit = Math.max(baseLimit, overrideLimit || 0)
+
+        if (overrideLimit && effectiveLimit !== baseLimit) {
+          console.log(
+            `[MeteringReservation] Applying stage concurrency override for ${normalizedStageCode}: ${baseLimit} -> ${effectiveLimit}`
+          )
+        }
+
+        setCachedConcurrencyLimit(cacheKey, effectiveLimit)
+        return effectiveLimit
       } catch (error) {
         console.warn('Failed to get concurrency limit, using default:', error)
-        return 5
+        const overrideLimit = taskCode === 'LLM2_DRAFT'
+          ? STAGE_CONCURRENCY_OVERRIDES[String(stageCode || '').trim().toUpperCase()]
+          : undefined
+        return Math.max(5, overrideLimit || 0)
       }
     }
   }

@@ -267,7 +267,8 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
         featureCode: request.featureCode,
         taskCode: request.taskCode,
         userId: request.userId,
-        idempotencyKey: `policy-${Date.now()}-${Math.random()}`
+        idempotencyKey: `policy-${Date.now()}-${Math.random()}`,
+        metadata: request.metadata
       }, estimatedUnits)
     }
   }

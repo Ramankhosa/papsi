@@ -23,6 +23,7 @@ export interface RequestMetadata {
   userAgent?: string
   correlationId?: string
   idempotencyKey?: string
+  stageCode?: string
 }
 
 // === FEATURE REQUEST TYPES ===
@@ -197,7 +198,7 @@ export interface ReservationService {
   createReservation(context: MeteringContext, units: number): Promise<string>
   releaseReservation(reservationId: string): Promise<void>
   getActiveReservations(tenantId: string, taskCode?: string): Promise<number>
-  getConcurrencyLimit(tenantId: string, taskCode?: string): Promise<number>
+  getConcurrencyLimit(tenantId: string, taskCode?: string, stageCode?: string): Promise<number>
 }
 
 export interface MeteringService {
