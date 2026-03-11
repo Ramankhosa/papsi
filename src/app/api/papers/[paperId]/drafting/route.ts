@@ -3884,6 +3884,7 @@ async function generateSection(
   const citationContext = bundle.citationContext;
   const evidencePromptContext = bundle.evidencePromptContext;
   const blueprintPromptContext = bundle.blueprintPromptContext;
+  const sectionWordBudget = bundle.sectionWordBudget;
   const prompt = bundle.prompt;
   const draft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
 
@@ -3959,6 +3960,7 @@ async function generateSection(
         baseContent: pass1Content!,
         sessionId,
         paperTypeCode,
+        targetWordCount: sectionWordBudget,
         tenantContext: tenantContext || null,
         dimensionCitations: dimensionCitations.length > 0 ? dimensionCitations : undefined,
       },
@@ -4063,7 +4065,19 @@ async function generateSection(
     );
   }
 
-  const sectionContent = rawContent;
+  const sectionBudgetTrim = sectionWordBudget !== undefined
+    ? truncateContentToWordLimit(rawContent, sectionWordBudget)
+    : null;
+  if (sectionBudgetTrim?.trimmed) {
+    console.warn('[PaperDrafting] Trimmed section content to word budget before post-processing', {
+      sectionKey,
+      limit: sectionWordBudget,
+      originalWords: sectionBudgetTrim.originalWords,
+      finalWords: sectionBudgetTrim.finalWords,
+      generationMode: useTwoPassPipeline ? 'two_pass' : 'topup_final'
+    });
+  }
+  const sectionContent = sectionBudgetTrim ? sectionBudgetTrim.content : rawContent;
   const knownSessionKeys = new Set(citations.map(c => c.citationKey));
 
   await emitStatus?.(

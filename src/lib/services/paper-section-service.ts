@@ -744,12 +744,15 @@ class PaperSectionService {
       data: { status: 'POLISHING' as PaperSectionStatus }
     });
 
+    const blueprintContext = await blueprintService.getSectionContext(section.sessionId, section.sectionKey);
+
     const polishResult = await sectionPolishService.polishWithRetry({
       sectionKey: section.sectionKey,
       displayName: section.displayName,
       baseContent,
       sessionId: section.sessionId,
       paperTypeCode,
+      targetWordCount: blueprintContext?.currentSection.wordBudget,
       tenantContext: tenantContext || null,
     });
 

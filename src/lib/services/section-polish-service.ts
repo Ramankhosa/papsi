@@ -33,6 +33,7 @@ export interface PolishInput {
   baseContent: string;
   sessionId: string;
   paperTypeCode: string;
+  targetWordCount?: number;
   tenantContext?: TenantContext | null;
   dimensionCitations?: DimensionCitationExpectation[];
 }
@@ -118,6 +119,95 @@ function extractNumbers(text: string): string[] {
     if (n.length > 0 && n !== '0') nums.push(n);
   }
   return Array.from(new Set(nums));
+}
+
+function normalizePositiveWordLimit(value: unknown): number | undefined {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return undefined;
+  }
+  return Math.max(1, Math.floor(numeric));
+}
+
+function computeWordCount(content: string): number {
+  const trimmed = String(content || '').replace(/<[^>]*>/g, ' ').trim();
+  if (!trimmed) return 0;
+  return trimmed.split(/\s+/).filter(Boolean).length;
+}
+
+function truncateContentToWordLimit(content: string, maxWords: number): {
+  content: string;
+  originalWords: number;
+  finalWords: number;
+  trimmed: boolean;
+} {
+  const normalized = String(content || '').trim();
+  const limit = Math.max(Math.floor(maxWords || 0), 0);
+  const originalWords = computeWordCount(normalized);
+
+  if (!normalized || limit <= 0) {
+    return {
+      content: '',
+      originalWords,
+      finalWords: 0,
+      trimmed: originalWords > 0
+    };
+  }
+
+  if (originalWords <= limit) {
+    return {
+      content: normalized,
+      originalWords,
+      finalWords: originalWords,
+      trimmed: false
+    };
+  }
+
+  const softCeiling = Math.ceil(limit * 1.15);
+  if (originalWords <= softCeiling) {
+    return {
+      content: normalized,
+      originalWords,
+      finalWords: originalWords,
+      trimmed: false
+    };
+  }
+
+  const words = normalized.split(/\s+/).filter(Boolean);
+  const roughCut = words.slice(0, softCeiling).join(' ');
+  const sentenceEndPattern = /[.!?]\s*(?:\n|$)|[.!?]["')\]]*\s/g;
+  let lastSentenceEnd = -1;
+  let match: RegExpExecArray | null;
+
+  while ((match = sentenceEndPattern.exec(roughCut)) !== null) {
+    const candidateEnd = match.index + match[0].trimEnd().length;
+    const candidateWordCount = computeWordCount(roughCut.slice(0, candidateEnd));
+    if (candidateWordCount >= Math.floor(limit * 0.7)) {
+      lastSentenceEnd = candidateEnd;
+    }
+  }
+
+  if (lastSentenceEnd > 0) {
+    const sentenceBounded = roughCut.slice(0, lastSentenceEnd).trim();
+    const finalWords = computeWordCount(sentenceBounded);
+    if (finalWords >= Math.floor(limit * 0.7)) {
+      return {
+        content: sentenceBounded,
+        originalWords,
+        finalWords,
+        trimmed: true
+      };
+    }
+  }
+
+  const clipped = words.slice(0, limit).join(' ').trim();
+  const finalWords = computeWordCount(clipped);
+  return {
+    content: clipped,
+    originalWords,
+    finalWords,
+    trimmed: true
+  };
 }
 
 function buildDriftReport(
@@ -209,7 +299,7 @@ async function buildPolishPrompt(
   input: PolishInput,
   isRetry: boolean,
   previousReport?: DriftReport
-): Promise<string> {
+): Promise<{ prompt: string; effectiveWordLimit?: number }> {
   const retryBlock = isRetry && previousReport ? `
 ═══════════════════════════════════════════════════════════════════════════════
 ⚠️  RETRY — PREVIOUS ATTEMPT FAILED VALIDATION
@@ -239,12 +329,18 @@ Restore the required mapped-evidence citations for every uncovered dimension.
 
   // Fetch paper-type-specific guidance from the database
   let publicationTypeBlock = '';
+  let effectiveWordLimit = normalizePositiveWordLimit(input.targetWordCount);
   try {
     const typePrompt = await sectionTemplateService.getPass2TypePrompt(
       input.sectionKey,
       input.paperTypeCode
     );
     if (typePrompt) {
+      const typePromptWordLimit = normalizePositiveWordLimit(typePrompt.constraints.wordLimit);
+      if (!effectiveWordLimit && typePromptWordLimit) {
+        effectiveWordLimit = typePromptWordLimit;
+      }
+
       const parts: string[] = [typePrompt.instruction];
 
       if (typePrompt.additions.length > 0) {
@@ -252,8 +348,9 @@ Restore the required mapped-evidence citations for every uncovered dimension.
       }
 
       const constraintNotes: string[] = [];
-      if (typePrompt.constraints.wordLimit) {
-        constraintNotes.push(`Target length: ~${typePrompt.constraints.wordLimit} words`);
+      if (effectiveWordLimit) {
+        constraintNotes.push(`Target length: about ${effectiveWordLimit} words`);
+        constraintNotes.push(`Hard cap: do not exceed ${effectiveWordLimit} words`);
       }
       if (typePrompt.constraints.styleRequirements?.length) {
         constraintNotes.push(`Style: ${typePrompt.constraints.styleRequirements.join(', ')}`);
@@ -350,7 +447,16 @@ Your job is to elevate the prose to publication quality:
       systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_RHYTHM_RULES, ...scopeLookup }, FALLBACK_RHYTHM),
     ]);
 
-  return `
+  const wordLimitBlock = effectiveWordLimit
+    ? `
+LENGTH CONTROL
+- Target length: about ${effectiveWordLimit} words.
+- Hard cap: do not exceed ${effectiveWordLimit} words.
+- If the draft is longer, compress, merge, and tighten prose rather than adding new material.
+`
+    : '';
+
+  return { prompt: `
 ═══════════════════════════════════════════════════════════════════════════════
 TASK: PUBLICATION POLISH — ${input.displayName.toUpperCase()}
 ═══════════════════════════════════════════════════════════════════════════════
@@ -372,6 +478,7 @@ ${improvementDirectives}
 ${hedgingRules}
 
 ${rhythmRules}
+${wordLimitBlock}
 ${publicationTypeBlock}
 ═══════════════════════════════════════════════════════════════════════════════
 DRAFT TO POLISH
@@ -383,7 +490,9 @@ OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════════════════════
 Return ONLY the polished section content in Markdown. No JSON wrapping,
 no code fences, no preamble. Start directly with the content.
-Every [CITE:key] from the draft above MUST appear in your output.`;
+Every [CITE:key] from the draft above MUST appear in your output.`,
+    effectiveWordLimit
+  };
 }
 
 // ============================================================================
@@ -443,7 +552,7 @@ class SectionPolishService {
     isRetry: boolean,
     previousReport?: DriftReport
   ): Promise<PolishResult> {
-    const prompt = await buildPolishPrompt(input, isRetry, previousReport);
+    const { prompt, effectiveWordLimit } = await buildPolishPrompt(input, isRetry, previousReport);
 
     try {
       const result = await llmGateway.executeLLMOperation(
@@ -483,6 +592,18 @@ class SectionPolishService {
       }
 
       polished = stripInlineMarkdownStyling(polishDraftMarkdown(polished));
+      if (effectiveWordLimit) {
+        const trimmed = truncateContentToWordLimit(polished, effectiveWordLimit);
+        if (trimmed.trimmed) {
+          console.warn('[SectionPolish] Trimmed polished output to word budget', {
+            sectionKey: input.sectionKey,
+            limit: effectiveWordLimit,
+            originalWords: trimmed.originalWords,
+            finalWords: trimmed.finalWords
+          });
+        }
+        polished = trimmed.content;
+      }
 
       const driftReport = buildDriftReport(input.baseContent, polished, input.dimensionCitations);
 
@@ -508,4 +629,4 @@ class SectionPolishService {
 // ============================================================================
 
 export const sectionPolishService = new SectionPolishService();
-export { extractCiteKeys, extractNumbers, buildDriftReport };
+export { extractCiteKeys, extractNumbers, buildDriftReport, truncateContentToWordLimit };
