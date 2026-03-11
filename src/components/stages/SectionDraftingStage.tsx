@@ -2872,6 +2872,19 @@ export default function SectionDraftingStage({
     return { byNo, signature };
   }, [figures]);
 
+  const handleOpenFigurePreview = useCallback((figureNo: number) => {
+    const figure = figures.find((entry) => entry.figureNo === figureNo);
+    if (!figure) return;
+
+    setPreviewFigure({
+      id: figure.id,
+      figureNo: figure.figureNo,
+      title: figure.title,
+      imagePath: figure.imagePath,
+      description: figure.description,
+    });
+  }, [figures]);
+
   const formatFigureLabelById = useCallback((figureId: string) => {
     const figure = figures.find((entry) => entry.id === figureId);
     if (!figure) return 'Selected figure';
@@ -4028,6 +4041,7 @@ export default function SectionDraftingStage({
                             ref={(editor) => { editorRefs.current[keyName] = editor; }}
                             value={content[keyName] || ''}
                             onChange={(markdown) => handleContentChange(keyName, markdown)}
+                            onFigureClick={handleOpenFigurePreview}
                             citationDisplayMeta={citationDisplayMeta}
                             figureDisplayMeta={figureDisplayMeta}
                             onBlur={() => {
@@ -4443,6 +4457,7 @@ export default function SectionDraftingStage({
                           <MarkdownRenderer
                             content={section.content}
                             figureDisplayMeta={figureDisplayMeta}
+                            onFigureClick={handleOpenFigurePreview}
                             className="!my-0"
                           />
                         ) : (

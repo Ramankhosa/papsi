@@ -3,8 +3,8 @@
  *
  * It preserves `data-figure-no`/`data-figure-image-path` attributes across
  * the HTML parse/serialize cycle, so figure placeholders can render as
- * inline chips (with thumbnail when available) while markdown still stores
- * canonical `[Figure N]` markers.
+ * inline citation-style tokens while markdown still stores canonical
+ * `[Figure N]` markers.
  */
 
 import { Node, mergeAttributes } from '@tiptap/core';
@@ -61,34 +61,19 @@ export const FigureNode = Node.create({
     const rawNo = String(HTMLAttributes['data-figure-no'] || '').trim();
     const figureNo = Number.parseInt(rawNo, 10);
     const safeNo = Number.isFinite(figureNo) && figureNo > 0 ? Math.trunc(figureNo) : null;
-    const figureLabel = safeNo ? `Figure ${safeNo}` : 'Figure';
+    const figureLabel = safeNo ? `[Figure ${safeNo}]` : '[Figure]';
 
     const rawTitle = String(HTMLAttributes['data-figure-title'] || '').trim();
-    const rawImagePath = String(HTMLAttributes['data-figure-image-path'] || '').trim();
-    const displayLabel = rawTitle ? `${figureLabel}: ${rawTitle}` : figureLabel;
-
-    const children: any[] = [];
-    if (rawImagePath) {
-      children.push([
-        'img',
-        {
-          src: rawImagePath,
-          alt: displayLabel,
-          class: 'paper-figure-chip-thumb',
-          loading: 'lazy',
-        },
-      ]);
-    }
-    children.push(['span', { class: 'paper-figure-chip-label' }, displayLabel]);
+    const children: any[] = [['span', { class: 'paper-figure-chip-label' }, figureLabel]];
 
     return [
       'span',
       mergeAttributes(HTMLAttributes, {
         class: 'paper-figure-chip',
         contenteditable: 'false',
+        title: rawTitle && safeNo ? `Figure ${safeNo}: ${rawTitle}` : (safeNo ? `Figure ${safeNo}` : 'Figure'),
       }),
       ...children,
     ];
   },
 });
-

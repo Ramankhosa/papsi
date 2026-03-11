@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, useCallback } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, useCallback, type MouseEvent } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import StarterKit from '@tiptap/starter-kit';
@@ -59,6 +59,7 @@ interface PaperMarkdownEditorProps {
   onFocus?: () => void;
   onBlur?: () => void;
   onSelectionChange?: (selection: { text: string; start: number; end: number } | null) => void;
+  onFigureClick?: (figureNo: number) => void;
   citationDisplayMeta?: PaperCitationDisplayMeta;
   figureDisplayMeta?: PaperFigureDisplayMeta;
   placeholder?: string;
@@ -176,9 +177,9 @@ function renderFigureChipHtml(
   }
 
   const safeNo = Math.trunc(figureNo);
-  const figureLabel = `Figure ${safeNo}`;
+  const figureLabel = `[Figure ${safeNo}]`;
   const { title, imagePath } = resolveFigureMeta(safeNo, figureDisplayMeta);
-  const displayLabel = title ? `${figureLabel}: ${title}` : figureLabel;
+  const accessibleLabel = title ? `Figure ${safeNo}: ${title}` : `Figure ${safeNo}`;
   const attrs = [
     'class="paper-figure-chip"',
     'contenteditable="false"',
@@ -192,11 +193,9 @@ function renderFigureChipHtml(
     attrs.push(`data-figure-image-path="${escapeHtml(imagePath)}"`);
   }
 
-  const thumb = imagePath
-    ? `<img class="paper-figure-chip-thumb" src="${escapeHtml(imagePath)}" alt="${escapeHtml(displayLabel)}" loading="lazy" />`
-    : '';
+  attrs.push(`title="${escapeHtml(accessibleLabel)}"`);
 
-  return `<span ${attrs.join(' ')}>${thumb}<span class="paper-figure-chip-label">${escapeHtml(displayLabel)}</span></span>`;
+  return `<span ${attrs.join(' ')}><span class="paper-figure-chip-label">${escapeHtml(figureLabel)}</span></span>`;
 }
 
 function convertMarkersToInlineHtml(
@@ -704,16 +703,16 @@ const EDITOR_STYLES = `
 .paper-editor .ProseMirror .paper-figure-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.4em;
-  border-radius: 0.7em;
-  border: 1px solid #c7d2fe;
-  background: #eef2ff;
-  color: #3730a3;
+  border-radius: 0.25em;
+  color: #1d4ed8;
   line-height: 1.3;
-  padding: 0.08em 0.38em;
-  margin: 0 0.08em;
-  max-width: 100%;
+  padding: 0.05em 0.1em;
+  margin: 0 0.05em;
   vertical-align: middle;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: #93c5fd;
+  text-underline-offset: 0.12em;
 }
 
 .paper-editor .ProseMirror .paper-figure-chip-thumb {
@@ -727,13 +726,15 @@ const EDITOR_STYLES = `
 }
 
 .paper-editor .ProseMirror .paper-figure-chip-label {
-  font-size: 0.78em;
+  font-size: 0.8em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 18em;
+}
+
+.paper-editor .ProseMirror .paper-figure-chip:hover {
+  color: #1d4ed8;
+  text-decoration-color: #60a5fa;
 }
 
 .paper-editor .ProseMirror sup {
@@ -758,6 +759,7 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     onFocus,
     onBlur,
     onSelectionChange,
+    onFigureClick,
     citationDisplayMeta,
     figureDisplayMeta,
     placeholder = 'Write section content...',
@@ -889,6 +891,21 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     if (!editor) return;
     editor.chain().focus().setTextSelection(range).run();
   }, [editor]);
+
+  const handleEditorClickCapture = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    if (typeof onFigureClick !== 'function') return;
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const figureElement = target?.closest('[data-figure-no]') as HTMLElement | null;
+    if (!figureElement) return;
+
+    const rawFigureNo = String(figureElement.getAttribute('data-figure-no') || '').trim();
+    const figureNo = Number.parseInt(rawFigureNo, 10);
+    if (!Number.isFinite(figureNo) || figureNo <= 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    onFigureClick(Math.trunc(figureNo));
+  }, [onFigureClick]);
 
   const resolveInsertContent = useCallback((text: string): string => {
     return text;
@@ -1148,7 +1165,9 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
         </BubbleMenu>
       )}
 
-      <EditorContent editor={editor} />
+      <div onClickCapture={handleEditorClickCapture}>
+        <EditorContent editor={editor} />
+      </div>
       {editor?.isEmpty && (
         <div className="pointer-events-none absolute left-2 top-10 text-slate-300 text-sm italic">
           {placeholder}

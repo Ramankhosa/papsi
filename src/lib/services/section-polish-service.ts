@@ -181,7 +181,9 @@ function buildDriftReport(
   }
 
   return {
-    passed: citationParity.passed && numberPreservation.passed,
+    // Only required mapped-evidence citation coverage blocks Pass 2.
+    // Broader citation/number drift is retained for diagnostics.
+    passed: dimensionCoverage ? dimensionCoverage.passed : true,
     citationParity,
     numberPreservation,
     dimensionCoverage,
@@ -219,6 +221,21 @@ ${previousReport.numberPreservation.missing.length > 0 ? `• MISSING NUMBERS (m
 ${previousReport.numberPreservation.added.length > 0 ? `• FABRICATED NUMBERS (must remove): ${previousReport.numberPreservation.added.join(', ')}` : ''}
 Pay extreme attention to citation anchors. Every [CITE:key] from the input MUST appear in your output.
 ` : '';
+  const effectiveRetryBlock = isRetry && previousReport?.dimensionCoverage
+    ? `
+REQUIRED CITATION COVERAGE STILL MISSING:
+${previousReport.dimensionCoverage.dimensions
+  .filter((dimension) => !dimension.covered)
+  .map((dimension) => {
+    const missingKeys = dimension.missingCitationKeys.length > 0
+      ? ` (${dimension.missingCitationKeys.map((key) => `[CITE:${key}]`).join(', ')})`
+      : '';
+    return `- ${dimension.dimensionLabel}${missingKeys}`;
+  })
+  .join('\n') || '- One or more blueprint dimensions are missing required citations.'}
+Restore the required mapped-evidence citations for every uncovered dimension.
+`
+    : retryBlock;
 
   // Fetch paper-type-specific guidance from the database
   let publicationTypeBlock = '';
@@ -339,7 +356,7 @@ TASK: PUBLICATION POLISH — ${input.displayName.toUpperCase()}
 ═══════════════════════════════════════════════════════════════════════════════
 
 ${persona}
-${retryBlock}
+${effectiveRetryBlock}
 ═══════════════════════════════════════════════════════════════════════════════
 STRICT RULES — VIOLATIONS CAUSE AUTOMATIC REJECTION
 ═══════════════════════════════════════════════════════════════════════════════
@@ -397,13 +414,12 @@ class SectionPolishService {
 
     console.warn(
       `[SectionPolish] Drift detected for ${input.sectionKey}, retrying.`,
-      `Missing cites: ${firstAttempt.driftReport?.citationParity.missing.join(', ') || 'none'}`,
-      `Missing nums: ${firstAttempt.driftReport?.numberPreservation.missing.join(', ') || 'none'}`
+      `Uncovered dimensions: ${firstAttempt.driftReport?.dimensionCoverage?.uncoveredDimensions.join(', ') || 'none'}`
     );
 
     await options?.onRetry?.({
       reason: 'drift_validation',
-      message: 'Retrying publication polish to preserve citations and numbers.',
+      message: 'Retrying publication polish to restore required citation coverage.',
       driftReport: firstAttempt.driftReport
     });
 
@@ -418,8 +434,7 @@ class SectionPolishService {
       success: false,
       driftReport: retryResult.driftReport || firstAttempt.driftReport,
       error: `Polish validation failed after retry. `
-        + `Missing citations: ${retryResult.driftReport?.citationParity.missing.join(', ') || 'none'}. `
-        + `Missing numbers: ${retryResult.driftReport?.numberPreservation.missing.join(', ') || 'none'}.`,
+        + `Missing required citation coverage for: ${retryResult.driftReport?.dimensionCoverage?.uncoveredDimensions.join(', ') || 'unknown dimensions'}.`,
     };
   }
 
