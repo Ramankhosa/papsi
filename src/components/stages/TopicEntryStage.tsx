@@ -33,6 +33,10 @@ import {
   File,
   AlertCircle
 } from 'lucide-react';
+import {
+  hasMeaningfulTopicContent,
+  normalizeTopicExtraction
+} from '@/lib/paper-topic-extraction';
 
 // ============================================================================
 // Auto-Resize Textarea Component
@@ -256,7 +260,7 @@ function buildDetectionFromSession(session: any): ArchetypeDetectionView | null 
 
 interface ModeSelectorProps {
   onSelect: (mode: 'expert' | 'guided') => void;
-  onFileExtracted: (extracted: any) => void;
+  onFileExtracted: (result: any) => void;
   sessionId: string;
   authToken: string | null;
 }
@@ -323,8 +327,8 @@ function ModeSelector({ onSelect, onFileExtracted, sessionId, authToken }: ModeS
       // Short delay to show the success state
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      // Pass extracted data to parent
-      onFileExtracted(data.extracted);
+      // Pass the full backend response so the parent can use persisted topic data too.
+      onFileExtracted(data);
 
     } catch (err) {
       console.error('File upload error:', err);
@@ -779,8 +783,8 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
               keywords: topic.keywords || [],
               abstractDraft: topic.abstractDraft || ''
             });
-            // If data exists, skip mode selection
-            if (topic.researchQuestion || topic.title) {
+            // Only skip the chooser when the topic contains meaningful content.
+            if (hasMeaningfulTopicContent(topic)) {
               setMode('expert');
               // Mark as saved if we have minimum valid data
               if (topic.researchQuestion && topic.researchQuestion.length >= 20) {
@@ -1193,88 +1197,101 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
     }
   }, [sessionId, authToken, buildTopicPayload]);
 
-  const handleFileExtracted = useCallback(async (extracted: any) => {
-    if (!extracted) return;
+  const handleFileExtracted = useCallback(async (payload: any) => {
+    const normalizedPayload = payload?.extracted
+      ? payload
+      : { extracted: payload };
+    const extracted = normalizeTopicExtraction(normalizedPayload?.extracted || {});
+    const persistedTopic = normalizedPayload?.topic || null;
 
-    console.log('[TopicEntry] File extraction received:', extracted);
+    console.log('[TopicEntry] File extraction received:', normalizedPayload);
 
-    // Build the new segments from extracted data
-    const newSegments: ResearchSegments = {
+    const chooseText = (nextValue: string | null, currentValue: string): string =>
+      nextValue && nextValue.trim().length > 0 ? nextValue : currentValue;
+    const chooseArray = (nextValue: string[], currentValue: string[]): string[] =>
+      Array.isArray(nextValue) && nextValue.length > 0 ? nextValue : currentValue;
+
+    const mergedSegments: ResearchSegments = {
       basics: {
-        title: extracted.title || '',
-        field: extracted.field || '',
-        subfield: extracted.subfield || '',
-        topicDescription: extracted.topicDescription || ''
+        title: chooseText(extracted.title, segments.basics.title),
+        field: chooseText(extracted.field, segments.basics.field),
+        subfield: chooseText(extracted.subfield, segments.basics.subfield),
+        topicDescription: chooseText(extracted.topicDescription, segments.basics.topicDescription)
       },
       question: {
-        mainQuestion: extracted.researchQuestion || '',
-        subQuestions: Array.isArray(extracted.subQuestions) ? extracted.subQuestions : [],
-        problemStatement: extracted.problemStatement || '',
-        researchGaps: extracted.researchGaps || ''
+        mainQuestion: chooseText(extracted.researchQuestion, segments.question.mainQuestion),
+        subQuestions: chooseArray(extracted.subQuestions, segments.question.subQuestions),
+        problemStatement: chooseText(extracted.problemStatement, segments.question.problemStatement),
+        researchGaps: chooseText(extracted.researchGaps, segments.question.researchGaps)
       },
       methodology: {
-        type: extracted.methodology || 'QUALITATIVE',
-        approach: extracted.methodologyApproach || '',
-        techniques: Array.isArray(extracted.techniques) ? extracted.techniques : [],
-        justification: ''
+        type: chooseText(extracted.methodology, segments.methodology.type || 'QUALITATIVE') || 'QUALITATIVE',
+        approach: chooseText(extracted.methodologyApproach, segments.methodology.approach),
+        techniques: chooseArray(extracted.techniques, segments.methodology.techniques),
+        justification: chooseText(extracted.methodologyJustification, segments.methodology.justification)
       },
       data: {
-        datasetDescription: extracted.datasetDescription || '',
-        dataCollection: extracted.dataCollection || '',
-        sampleSize: extracted.sampleSize || '',
-        tools: Array.isArray(extracted.tools) ? extracted.tools : [],
-        experiments: extracted.experiments || ''
+        datasetDescription: chooseText(extracted.datasetDescription, segments.data.datasetDescription),
+        dataCollection: chooseText(extracted.dataCollection, segments.data.dataCollection),
+        sampleSize: chooseText(extracted.sampleSize, segments.data.sampleSize),
+        tools: chooseArray(extracted.tools, segments.data.tools),
+        experiments: chooseText(extracted.experiments, segments.data.experiments)
       },
       outcomes: {
-        hypothesis: extracted.hypothesis || '',
-        expectedResults: extracted.expectedResults || '',
-        contributionType: extracted.contributionType || 'EMPIRICAL',
-        novelty: extracted.novelty || '',
-        limitations: extracted.limitations || ''
+        hypothesis: chooseText(extracted.hypothesis, segments.outcomes.hypothesis),
+        expectedResults: chooseText(extracted.expectedResults, segments.outcomes.expectedResults),
+        contributionType: chooseText(extracted.contributionType, segments.outcomes.contributionType || 'EMPIRICAL') || 'EMPIRICAL',
+        novelty: chooseText(extracted.novelty, segments.outcomes.novelty),
+        limitations: chooseText(extracted.limitations, segments.outcomes.limitations)
       },
-      keywords: Array.isArray(extracted.keywords) ? extracted.keywords : [],
-      abstractDraft: ''
+      keywords: chooseArray(extracted.keywords, segments.keywords),
+      abstractDraft: chooseText(extracted.abstractDraft, segments.abstractDraft)
     };
 
-    // Update state with extracted data
-    setSegments(newSegments);
+    setSegments(mergedSegments);
 
-    // Store extraction metadata
     if (typeof extracted.confidence === 'number') {
       setExtractionConfidence(extracted.confidence);
     }
     if (extracted.extractionNotes) {
       setExtractionNotes(extracted.extractionNotes);
     }
+    if (normalizedPayload?.archetypeDetection) {
+      const parsedDetection = toArchetypeDetectionView(normalizedPayload.archetypeDetection);
+      if (parsedDetection) {
+        setArchetypeDetection(parsedDetection);
+      }
+    }
 
-    // Count how many fields were extracted
     const extractedFieldCount = Object.entries(extracted).filter(([key, value]) => {
       if (key === 'confidence' || key === 'extractionNotes') return false;
       if (Array.isArray(value)) return value.length > 0;
       return value !== null && value !== '';
     }).length;
 
-    // Auto-save the extracted data to database immediately
-    // This ensures data persists when user navigates to other stages
-    const saved = await saveTopicData(newSegments);
-    
-    if (saved) {
+    if (persistedTopic) {
       setTopicSaved(true);
       setSuccess(`Successfully extracted ${extractedFieldCount} fields from your document and saved automatically. You can review and edit the information below.`);
-      // Notify parent component that topic was saved
-      onTopicSaved?.({
-        title: newSegments.basics.title,
-        researchQuestion: newSegments.question.mainQuestion,
-        keywords: newSegments.keywords,
-        methodology: newSegments.methodology.type
-      });
+      onTopicSaved?.(persistedTopic);
     } else {
-      setSuccess(`Successfully extracted ${extractedFieldCount} fields from your document. Please review and click "Save Research Topic" to persist your changes.`);
+      const saved = await saveTopicData(mergedSegments);
+      if (saved) {
+        setTopicSaved(true);
+        setSuccess(`Successfully extracted ${extractedFieldCount} fields from your document and saved automatically. You can review and edit the information below.`);
+        onTopicSaved?.({
+          title: mergedSegments.basics.title,
+          researchQuestion: mergedSegments.question.mainQuestion,
+          keywords: mergedSegments.keywords,
+          methodology: mergedSegments.methodology.type
+        });
+      } else {
+        setSuccess(`Successfully extracted ${extractedFieldCount} fields from your document. Please review and click "Save Research Topic" to persist your changes.`);
+      }
     }
 
     // Switch to expert mode to show the populated form
     setMode('expert');
-  }, [saveTopicData, onTopicSaved]);
+  }, [onTopicSaved, saveTopicData, segments]);
 
   // ============================================================================
   // Validation

@@ -41,6 +41,7 @@ import { argumentPlannerService } from './argument-planner-service';
 import { citationValidator } from './citation-validator';
 import { buildRhetoricalPromptBlock } from './rhetorical-blueprint-service';
 import { systemPromptTemplateService, TEMPLATE_KEYS } from './system-prompt-template-service';
+import { applyLengthControlToWordBudget } from '../paper-length-control';
 import {
   buildPass1FigureGroundingSnapshot,
   formatSelectedFigureContext,
@@ -752,7 +753,10 @@ class PaperSectionService {
       baseContent,
       sessionId: section.sessionId,
       paperTypeCode,
-      targetWordCount: blueprintContext?.currentSection.wordBudget,
+      targetWordCount: applyLengthControlToWordBudget(
+        section.sectionKey,
+        blueprintContext?.currentSection.wordBudget
+      ),
       tenantContext: tenantContext || null,
     });
 
@@ -1844,7 +1848,9 @@ ${currentSection.mustCover.map(c => `✓ ${c}`).join('\n')}
 MUST AVOID (Prevent duplication):
 ${currentSection.mustAvoid.map(c => `✗ ${c}`).join('\n')}
 
-${currentSection.wordBudget ? `Word Budget: ~${currentSection.wordBudget} words` : ''}
+${applyLengthControlToWordBudget(sectionKey, currentSection.wordBudget)
+  ? `Word Budget: ~${applyLengthControlToWordBudget(sectionKey, currentSection.wordBudget)} words`
+  : ''}
 
 ${citationModeFallbackBlock ? `
 [PRIORITY 2.5 - CITATION MODE] SECTION CITATION CONTROL

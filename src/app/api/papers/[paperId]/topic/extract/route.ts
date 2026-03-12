@@ -5,12 +5,17 @@ import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { llmGateway } from '@/lib/metering/gateway';
 import { paperArchetypeService } from '@/lib/services/paper-archetype-service';
+import {
+  mergePersistableTopic,
+  normalizeTopicExtraction,
+  prepareDocumentContentForExtraction,
+  type PersistableTopicFields
+} from '@/lib/paper-topic-extraction';
 
 export const runtime = 'nodejs';
 
-// Maximum character limit for uploaded content
-const MAX_CONTENT_LENGTH = 50000; // ~50K characters
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_PROMPT_SOURCE_LENGTH = 48000;
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   const where = user.roles?.includes('SUPER_ADMIN')
@@ -60,18 +65,25 @@ function parseJsonOutput(output: string): any | null {
   }
 }
 
-function buildExtractionPrompt(content: string, paperTypeCode?: string): string {
+function buildExtractionPrompt(
+  content: string,
+  paperTypeCode?: string,
+  coverageNote?: string
+): string {
   return `You are an expert academic research analyst. Your task is to analyze the provided document and extract all relevant information to populate a research paper setup form.
+
+DOCUMENT COVERAGE NOTE:
+${coverageNote || 'The extracted text below is the full source content.'}
 
 DOCUMENT CONTENT:
 ---
-${content.slice(0, 40000)}
-${content.length > 40000 ? '\n[... content truncated ...]' : ''}
+${content}
 ---
 
 PAPER TYPE: ${paperTypeCode || 'academic research paper'}
 
 TASK: Carefully read the document and extract information for each of the following fields. If a field's information is not explicitly stated but can be reasonably inferred, provide your best inference. If information cannot be determined, set to null.
+Retain concrete details instead of generalizing them away. If the document mentions datasets, models, metrics, baselines, tools, experiments, performance values, constraints, or findings, capture them in the most relevant structured fields and include the most important ones in sourceHighlights.
 
 EXTRACTION FIELDS:
 1. title: The paper/research title (max 200 chars)
@@ -96,6 +108,9 @@ EXTRACTION FIELDS:
 20. novelty: What makes this research novel or unique
 21. limitations: Known limitations of the research
 22. keywords: Array of 5-10 relevant academic keywords
+23. methodologyJustification: Why this methodology fits the problem, data, or evaluation setup
+24. abstractDraft: A concise 1-paragraph summary of the paper idea as described in the source
+25. sourceHighlights: Array of 5-15 specific details worth preserving, especially datasets, metrics, tools, models, baselines, performance claims, constraints, and findings
 
 OUTPUT FORMAT: Return ONLY valid JSON with the following structure (no markdown fences or explanations):
 {
@@ -121,6 +136,9 @@ OUTPUT FORMAT: Return ONLY valid JSON with the following structure (no markdown 
   "novelty": "string or null",
   "limitations": "string or null",
   "keywords": ["string"] or [],
+  "methodologyJustification": "string or null",
+  "abstractDraft": "string or null",
+  "sourceHighlights": ["string"] or [],
   "confidence": 0.0 to 1.0,
   "extractionNotes": "Brief notes about the extraction quality or missing information"
 }
@@ -132,34 +150,35 @@ RULES:
 - For methodology and contributionType, choose the best matching enum value
 - For arrays, include all relevant items found
 - Set confidence between 0-1 based on how much information was extractable
-- Include helpful notes about what couldn't be extracted or needs user verification`;
+- Include helpful notes about what couldn't be extracted or needs user verification
+- If the document reports actual findings or performance, capture them in expectedResults and sourceHighlights instead of dropping them`;
 }
 
-function buildTopicOverrideFromExtracted(extracted: Record<string, any>) {
+function buildTopicOverrideFromExtracted(extracted: PersistableTopicFields) {
   return {
-    title: typeof extracted.title === 'string' ? extracted.title : null,
-    field: typeof extracted.field === 'string' ? extracted.field : null,
-    subfield: typeof extracted.subfield === 'string' ? extracted.subfield : null,
-    topicDescription: typeof extracted.topicDescription === 'string' ? extracted.topicDescription : null,
-    researchQuestion: typeof extracted.researchQuestion === 'string' ? extracted.researchQuestion : null,
-    subQuestions: Array.isArray(extracted.subQuestions) ? extracted.subQuestions : [],
-    problemStatement: typeof extracted.problemStatement === 'string' ? extracted.problemStatement : null,
-    researchGaps: typeof extracted.researchGaps === 'string' ? extracted.researchGaps : null,
-    methodology: typeof extracted.methodology === 'string' ? extracted.methodology : null,
-    methodologyApproach: typeof extracted.methodologyApproach === 'string' ? extracted.methodologyApproach : null,
-    techniques: Array.isArray(extracted.techniques) ? extracted.techniques : [],
-    datasetDescription: typeof extracted.datasetDescription === 'string' ? extracted.datasetDescription : null,
-    dataCollection: typeof extracted.dataCollection === 'string' ? extracted.dataCollection : null,
-    sampleSize: typeof extracted.sampleSize === 'string' ? extracted.sampleSize : null,
-    tools: Array.isArray(extracted.tools) ? extracted.tools : [],
-    experiments: typeof extracted.experiments === 'string' ? extracted.experiments : null,
-    hypothesis: typeof extracted.hypothesis === 'string' ? extracted.hypothesis : null,
-    expectedResults: typeof extracted.expectedResults === 'string' ? extracted.expectedResults : null,
-    contributionType: typeof extracted.contributionType === 'string' ? extracted.contributionType : null,
-    novelty: typeof extracted.novelty === 'string' ? extracted.novelty : null,
-    limitations: typeof extracted.limitations === 'string' ? extracted.limitations : null,
-    keywords: Array.isArray(extracted.keywords) ? extracted.keywords : [],
-    abstractDraft: typeof extracted.abstractDraft === 'string' ? extracted.abstractDraft : null
+    title: extracted.title,
+    field: extracted.field,
+    subfield: extracted.subfield,
+    topicDescription: extracted.topicDescription,
+    researchQuestion: extracted.researchQuestion,
+    subQuestions: extracted.subQuestions,
+    problemStatement: extracted.problemStatement,
+    researchGaps: extracted.researchGaps,
+    methodology: extracted.methodology,
+    methodologyApproach: extracted.methodologyApproach,
+    techniques: extracted.techniques,
+    datasetDescription: extracted.datasetDescription,
+    dataCollection: extracted.dataCollection,
+    sampleSize: extracted.sampleSize,
+    tools: extracted.tools,
+    experiments: extracted.experiments,
+    hypothesis: extracted.hypothesis,
+    expectedResults: extracted.expectedResults,
+    contributionType: extracted.contributionType,
+    novelty: extracted.novelty,
+    limitations: extracted.limitations,
+    keywords: extracted.keywords,
+    abstractDraft: extracted.abstractDraft
   };
 }
 
@@ -232,13 +251,16 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       }, { status: 400 });
     }
 
-    if (textContent.length > MAX_CONTENT_LENGTH) {
-      textContent = textContent.slice(0, MAX_CONTENT_LENGTH);
-      console.log(`[TopicExtract] Content truncated from ${textContent.length} to ${MAX_CONTENT_LENGTH} chars`);
-    }
-
-    // Build extraction prompt
-    const prompt = buildExtractionPrompt(textContent, session.paperType?.code || undefined);
+    const originalContentLength = textContent.length;
+    const promptContent = prepareDocumentContentForExtraction(textContent, MAX_PROMPT_SOURCE_LENGTH);
+    const coverageNote = promptContent.length < originalContentLength
+      ? `A focused excerpt is provided for extraction because the source text is long (${originalContentLength} characters). The excerpt preserves the beginning and end of the document to retain setup details as well as later metrics/results.`
+      : `The full extracted source text is provided (${originalContentLength} characters).`;
+    const prompt = buildExtractionPrompt(
+      promptContent,
+      session.paperType?.code || undefined,
+      coverageNote
+    );
     const headers = Object.fromEntries(request.headers.entries());
 
     // Call LLM for extraction
@@ -253,7 +275,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         paperId: sessionId,
         action: 'extract_from_file',
         fileName,
-        contentLength: textContent.length,
+        contentLength: originalContentLength,
         module: 'publication_ideation'
       }
     };
@@ -277,12 +299,54 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       }, { status: 500 });
     }
 
+    const normalizedExtracted = normalizeTopicExtraction(parsed as Record<string, unknown>);
+    const topicData = mergePersistableTopic(session.researchTopic, normalizedExtracted);
+    const persistedTopicData = {
+      ...topicData,
+      title: topicData.title || 'Untitled Research',
+      researchQuestion: topicData.researchQuestion || 'Research question to be defined',
+      methodology: topicData.methodology || 'OTHER',
+      contributionType: topicData.contributionType || 'EMPIRICAL'
+    };
+    const contentHash = crypto.createHash('sha256').update(textContent).digest('hex');
+    const llmResponsePayload = JSON.stringify({
+      source: 'FILE_EXTRACT',
+      fileName,
+      contentHash,
+      originalContentLength,
+      promptContentLength: promptContent.length,
+      sourceText: textContent,
+      rawOutput: result.response.output || '',
+      extracted: normalizedExtracted,
+      extractedAt: new Date().toISOString()
+    });
+
+    const topic = await prisma.researchTopic.upsert({
+      where: { sessionId },
+      update: {
+        ...persistedTopicData,
+        llmPromptUsed: prompt,
+        llmResponse: llmResponsePayload,
+        llmTokensUsed: result.response.outputTokens || null
+      },
+      create: {
+        sessionId,
+        ...persistedTopicData,
+        llmPromptUsed: prompt,
+        llmResponse: llmResponsePayload,
+        llmTokensUsed: result.response.outputTokens || null
+      }
+    });
+
     // Log extraction stats
-    console.log(`[TopicExtract] Extraction complete. Confidence: ${parsed.confidence}, Fields extracted: ${
-      Object.entries(parsed).filter(([k, v]) => v !== null && k !== 'confidence' && k !== 'extractionNotes').length
+    console.log(`[TopicExtract] Extraction complete. Confidence: ${normalizedExtracted.confidence}, Fields extracted: ${
+      Object.entries(normalizedExtracted).filter(([k, v]) => {
+        if (k === 'confidence' || k === 'extractionNotes') return false;
+        if (Array.isArray(v)) return v.length > 0;
+        return v !== null && v !== '';
+      }).length
     }`);
 
-    // Store raw content for reference (optional - could save to session metadata)
     await prisma.draftingHistory.create({
       data: {
         sessionId,
@@ -291,9 +355,18 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         stage: session.status,
         newData: {
           fileName,
-          contentLength: textContent.length,
-          confidence: parsed.confidence,
-          extractedFields: Object.keys(parsed).filter(k => parsed[k] !== null && k !== 'confidence' && k !== 'extractionNotes')
+          contentHash,
+          contentLength: originalContentLength,
+          promptContentLength: promptContent.length,
+          confidence: normalizedExtracted.confidence,
+          extractionNotes: normalizedExtracted.extractionNotes,
+          extractedFields: Object.keys(normalizedExtracted).filter((key) => {
+            if (key === 'confidence' || key === 'extractionNotes') return false;
+            const value = normalizedExtracted[key as keyof typeof normalizedExtracted];
+            if (Array.isArray(value)) return value.length > 0;
+            return value !== null && value !== '';
+          }),
+          extractedPayload: JSON.parse(JSON.stringify(normalizedExtracted))
         }
       }
     });
@@ -305,10 +378,13 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         headers,
         userId: user.id,
         source: 'TOPIC_EXTRACT',
-        topicOverride: buildTopicOverrideFromExtracted(parsed),
+        topicOverride: buildTopicOverrideFromExtracted(persistedTopicData),
         preferPersistedTopic: true,
-        helperNotes: typeof parsed.extractionNotes === 'string'
-          ? { extractionNotes: parsed.extractionNotes }
+        helperNotes: normalizedExtracted.extractionNotes
+          ? {
+              extractionNotes: normalizedExtracted.extractionNotes,
+              sourceHighlights: normalizedExtracted.sourceHighlights
+            }
           : null
       });
     } catch (detectError) {
@@ -317,11 +393,13 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
     return NextResponse.json({
       success: true,
-      extracted: parsed,
+      extracted: normalizedExtracted,
+      topic,
       archetypeDetection,
       metadata: {
         fileName,
-        contentLength: textContent.length,
+        contentLength: originalContentLength,
+        promptContentLength: promptContent.length,
         tokensUsed: result.response.outputTokens || 0
       }
     });

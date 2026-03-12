@@ -15,6 +15,7 @@ import { llmGateway, type TenantContext } from '../metering';
 import { polishDraftMarkdown, stripInlineMarkdownStyling } from '../markdown-draft-formatter';
 import { sectionTemplateService } from './section-template-service';
 import { systemPromptTemplateService, TEMPLATE_KEYS } from './system-prompt-template-service';
+import { applyLengthControlToWordBudget } from '../paper-length-control';
 import crypto from 'crypto';
 
 // ============================================================================
@@ -348,7 +349,7 @@ Restore the required mapped-evidence citations for every uncovered dimension.
     if (typePrompt) {
       const typePromptWordLimit = normalizePositiveWordLimit(typePrompt.constraints.wordLimit);
       if (!effectiveWordLimit && typePromptWordLimit) {
-        effectiveWordLimit = typePromptWordLimit;
+        effectiveWordLimit = applyLengthControlToWordBudget(input.sectionKey, typePromptWordLimit);
       }
 
       const parts: string[] = [typePrompt.instruction];

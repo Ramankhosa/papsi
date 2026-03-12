@@ -13,6 +13,7 @@ import { getWritingSample, buildWritingSampleBlock } from '@/lib/writing-sample-
 import { blueprintService } from '@/lib/services/blueprint-service';
 import { evidencePackService, type SectionEvidencePack } from '@/lib/services/evidence-pack-service';
 import { formatBibliographyMarkdown, polishDraftMarkdown, stripInlineMarkdownStyling } from '@/lib/markdown-draft-formatter';
+import { applyLengthControlToWordBudget } from '@/lib/paper-length-control';
 import { isFeatureEnabled } from '@/lib/feature-flags';
 import { sectionPolishService } from '@/lib/services/section-polish-service';
 import { citationValidator } from '@/lib/services/citation-validator';
@@ -4351,7 +4352,9 @@ async function resolveSectionWordBudget(params: {
 }): Promise<number | undefined> {
   const normalizedSectionKey = normalizeSectionKey(params.sectionKey);
   const fromBlueprint = normalizePositiveWordBudget(params.blueprintWordBudget);
-  if (fromBlueprint) return fromBlueprint;
+  if (fromBlueprint) {
+    return applyLengthControlToWordBudget(normalizedSectionKey, fromBlueprint);
+  }
 
   try {
     const template = await sectionTemplateService.getSectionTemplate(
@@ -4359,7 +4362,9 @@ async function resolveSectionWordBudget(params: {
       params.paperTypeCode
     );
     const fromTemplate = normalizePositiveWordBudget(template?.constraints?.wordLimit);
-    if (fromTemplate) return fromTemplate;
+    if (fromTemplate) {
+      return applyLengthControlToWordBudget(normalizedSectionKey, fromTemplate);
+    }
   } catch {
     // ignore and fall back
   }
@@ -4370,11 +4375,15 @@ async function resolveSectionWordBudget(params: {
     if (!defaults) return undefined;
 
     const direct = normalizePositiveWordBudget(defaults[normalizedSectionKey]);
-    if (direct) return direct;
+    if (direct) {
+      return applyLengthControlToWordBudget(normalizedSectionKey, direct);
+    }
 
     const alias = normalizedSectionKey.replace(/_/g, '');
     const aliasBudget = normalizePositiveWordBudget(defaults[alias]);
-    if (aliasBudget) return aliasBudget;
+    if (aliasBudget) {
+      return applyLengthControlToWordBudget(normalizedSectionKey, aliasBudget);
+    }
   } catch {
     // ignore
   }
