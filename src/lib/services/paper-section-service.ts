@@ -1814,6 +1814,12 @@ COHERENCE RULES (Always Apply)
     // Priority: Lower numbers = lower priority, Higher numbers = higher priority
     // When contradictions exist, HIGHER PRIORITY WINS
 
+    const effectiveSectionKey = sectionKey || currentSection.sectionKey || 'manuscript';
+    const controlledWordBudget = applyLengthControlToWordBudget(
+      effectiveSectionKey,
+      currentSection.wordBudget
+    );
+
     const prompt = `
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 ║  PROMPT PRIORITY GUIDE                                                        ║
@@ -1848,8 +1854,8 @@ ${currentSection.mustCover.map(c => `✓ ${c}`).join('\n')}
 MUST AVOID (Prevent duplication):
 ${currentSection.mustAvoid.map(c => `✗ ${c}`).join('\n')}
 
-${applyLengthControlToWordBudget(sectionKey, currentSection.wordBudget)
-  ? `Word Budget: ~${applyLengthControlToWordBudget(sectionKey, currentSection.wordBudget)} words`
+${controlledWordBudget
+  ? `Word Budget: ~${controlledWordBudget} words`
   : ''}
 
 ${citationModeFallbackBlock ? `

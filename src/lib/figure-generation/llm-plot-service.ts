@@ -6,7 +6,7 @@ import {
   type PaperFigureInferenceMeta,
 } from './paper-figure-metadata'
 
-import type { ChartStructuredSpec, FigureRole, PaperProfile } from './types'
+import type { ChartStructuredSpec, FigureData, FigureRole, PaperProfile } from './types'
 import type { PythonChartSpec } from './python-chart-service'
 
 type NumericChartDataset = {
@@ -569,6 +569,42 @@ export function resolveChartGenerationInput(
   }
 
   return { source: 'none' }
+}
+
+export function hasResolvedExplicitChartData(input: ResolvedChartGenerationInput): boolean {
+  return !!input.datasets?.length || !!input.pointDatasets?.length
+}
+
+export function toFigureDataPayload(input: ResolvedChartGenerationInput): FigureData | null {
+  if (input.pointDatasets?.length) {
+    const primaryDataset = input.pointDatasets[0]
+    if (!primaryDataset?.data?.length) return null
+
+    const xValues = primaryDataset.data.map((point) => point.x)
+    const yValues = primaryDataset.data.map((point) => point.y)
+    const radii = primaryDataset.data
+      .map((point) => point.r)
+      .filter((value): value is number => Number.isFinite(value))
+
+    return {
+      xValues,
+      yValues,
+      ...(radii.length === primaryDataset.data.length ? { values: radii } : {}),
+    }
+  }
+
+  if (input.labels?.length && input.datasets?.length) {
+    return {
+      labels: [...input.labels],
+      datasets: input.datasets.map((dataset) => ({
+        label: dataset.label,
+        data: [...dataset.data],
+        ...(dataset.errors?.length ? { errors: [...dataset.errors] } : {}),
+      })),
+    }
+  }
+
+  return null
 }
 
 function defaultFigureSizeForPlot(plotType: string): PythonChartSpec['figureSize'] {

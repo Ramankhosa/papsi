@@ -717,8 +717,14 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
 // Stage Order
 // ============================================================================
 
+const HIDDEN_STAGE_KEYS = new Set([
+  'MANUSCRIPT_REVIEW',
+  'MANUSCRIPT_IMPROVE',
+  'HUMANIZATION'
+])
+
 // Paper drafting stage order - Paper Foundation (OUTLINE_PLANNING) comes first
-export const STAGE_ORDER = [
+const ALL_STAGE_ORDER = [
   'OUTLINE_PLANNING',  // Paper Foundation - configure paper type & structure first
   'TOPIC_ENTRY',       // Research Topic - define research question
   'BLUEPRINT',         // Paper Blueprint - define paper structure & dimensions
@@ -732,6 +738,8 @@ export const STAGE_ORDER = [
   'REVIEW_EXPORT'      // Adaptive Export - finalize and export
 ]
 
+export const STAGE_ORDER = ALL_STAGE_ORDER.filter(stage => !HIDDEN_STAGE_KEYS.has(stage))
+
 // ============================================================================
 // Helpers for Navigation
 // ============================================================================
@@ -744,7 +752,7 @@ export function getStageSubStages(stage: StageDefinition, session: any): SubStag
 }
 
 export function getVisibleStages(_session: any): StageDefinition[] {
-  return STAGE_DEFINITIONS
+  return STAGE_DEFINITIONS.filter(stage => !HIDDEN_STAGE_KEYS.has(stage.key))
 }
 
 export function calculateStageCompletion(

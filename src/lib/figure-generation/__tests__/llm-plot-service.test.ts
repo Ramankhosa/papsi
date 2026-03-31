@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import { validateChartConfig } from '../llm-figure-service'
 import {
+  hasResolvedExplicitChartData,
   resolveChartGenerationInput,
+  toFigureDataPayload,
   validateCustomPythonPlotCode,
 } from '../llm-plot-service'
 
@@ -59,6 +61,26 @@ describe('llm plot service', () => {
 
     expect(resolved.source).toBe('raw_request')
     expect(resolved.rawDataText).toContain('epoch 3')
+    expect(hasResolvedExplicitChartData(resolved)).toBe(false)
+  })
+
+  it('converts parsed categorical chart input into a persistable figure payload', () => {
+    const resolved = resolveChartGenerationInput(
+      'bar',
+      null,
+      'Method,Score\nBaseline,72\nProposed,81',
+      'Model Accuracy'
+    )
+
+    expect(toFigureDataPayload(resolved)).toEqual({
+      labels: ['Baseline', 'Proposed'],
+      datasets: [
+        {
+          label: 'Score',
+          data: [72, 81],
+        },
+      ],
+    })
   })
 
   it('rejects unsafe custom matplotlib code', () => {

@@ -159,7 +159,7 @@ describe('SearchStrategyService', () => {
       expect(counts.THEORETICAL_FOUNDATION).toBeGreaterThanOrEqual(1);
       
       // Total should be at least 6 (minimum per SRS)
-      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      const total = (Object.values(counts) as number[]).reduce((a, b) => a + b, 0);
       expect(total).toBeGreaterThanOrEqual(6);
     });
 
@@ -178,7 +178,7 @@ describe('SearchStrategyService', () => {
       };
 
       const counts = (service as any).calculateTargetQueryCounts(priorities);
-      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      const total = (Object.values(counts) as number[]).reduce((a, b) => a + b, 0);
       
       // Even with all LOW, should still hit minimum
       expect(total).toBeGreaterThanOrEqual(6);
@@ -317,7 +317,7 @@ describe('SearchStrategyService', () => {
       
       // At least one query should contain the main keyword
       const queryTexts = fallback.map((q: GeneratedQuery) => q.queryText.toLowerCase());
-      const hasMainKeyword = queryTexts.some(text => text.includes('blockchain'));
+      const hasMainKeyword = queryTexts.some((text: string) => text.includes('blockchain'));
       
       expect(hasMainKeyword).toBe(true);
     });

@@ -242,7 +242,7 @@ describe('CitationMappingService', () => {
       expect(report.gaps.length).toBeGreaterThan(0);
       
       // 'Research gaps' should be identified as a gap
-      const researchGapsGap = report.gaps.find(g => g.dimension.includes('Research gaps'));
+      const researchGapsGap = report.gaps.find((g: { dimension: string }) => g.dimension.includes('Research gaps'));
       expect(researchGapsGap).toBeDefined();
     });
 
@@ -267,7 +267,7 @@ describe('CitationMappingService', () => {
 
       const report = (service as any).generateCoverageReport(blueprint, mappings);
       
-      expect(report.warnings.some(w => w.includes('unmapped'))).toBe(true);
+      expect(report.warnings.some((w: string) => w.includes('unmapped'))).toBe(true);
     });
 
     it('should generate empty coverage report when no citations', () => {
@@ -339,7 +339,7 @@ describe('CitationMappingService', () => {
       const parsed = (service as any).parseMappingResponse(invalidResponse, papers);
       
       expect(parsed).toHaveLength(2);
-      expect(parsed.every(p => p.mappingStatus === 'ERROR')).toBe(true);
+      expect(parsed.every((p: { mappingStatus: string }) => p.mappingStatus === 'ERROR')).toBe(true);
     });
 
     it('should handle snake_case field names from LLM', () => {
@@ -449,4 +449,3 @@ describe('CitationMappingService', () => {
     });
   });
 });
-

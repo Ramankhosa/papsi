@@ -200,7 +200,7 @@ describe('LiteratureSearchService', () => {
       const deduplicated = (service as any).deduplicateResults(results);
 
       expect(deduplicated).toHaveLength(2);
-      expect(deduplicated.map(r => r.doi)).toEqual(['10.1000/test', '10.1000/different']);
+      expect(deduplicated.map((r: SearchResult) => r.doi)).toEqual(['10.1000/test', '10.1000/different']);
     });
 
     it('should preserve result with more complete metadata when deduplicating', () => {
@@ -258,8 +258,9 @@ describe('LiteratureSearchService', () => {
       expect(requestCounts).toBeDefined();
 
       // If provider is properly invoked, verify rate limit was checked
-      if (mockProvider.search.mock?.calls?.length > 0) {
-        expect(mockProvider.search).toHaveBeenCalledTimes(1);
+      const searchMock = mockProvider.search as Mock;
+      if (searchMock.mock.calls.length > 0) {
+        expect(searchMock).toHaveBeenCalledTimes(1);
       }
     });
 

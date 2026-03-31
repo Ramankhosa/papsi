@@ -1882,8 +1882,8 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               </div>
               {(category === 'DATA_CHART' || category === 'STATISTICAL_PLOT' || figureType === 'scatter') && (
                 <p className="rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-xs text-blue-700">
-                  Paste raw CSV, TSV, or simple <code>label, value</code> / <code>x, y</code> rows here if you have them.
-                  Generation will use that data when no structured payload is provided.
+                  Paste explicit CSV, TSV, or simple <code>label, value</code> / <code>x, y</code> rows here.
+                  Free-form numeric prose is not used for chart rendering because it can produce incomplete or incorrect plots.
                 </p>
               )}
 

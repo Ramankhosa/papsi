@@ -87,6 +87,15 @@ const STAGE_ORDER: StageKey[] = [
   'REVIEW_EXPORT'
 ]
 
+const HIDDEN_STAGE_KEYS = new Set<StageKey>([
+  'MANUSCRIPT_REVIEW',
+  'MANUSCRIPT_IMPROVE',
+  'HUMANIZATION'
+])
+
+const VISIBLE_STAGES = STAGES.filter(stage => !HIDDEN_STAGE_KEYS.has(stage.key))
+const VISIBLE_STAGE_ORDER = STAGE_ORDER.filter(stage => !HIDDEN_STAGE_KEYS.has(stage))
+
 interface PaperSession {
   id: string
   title?: string
@@ -160,6 +169,9 @@ export default function PaperSessionPage() {
   const [stageWarning, setStageWarning] = useState<string | null>(null)
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false)
   const [selectedSection, setSelectedSection] = useState<string>('')
+  const resolvedCurrentStage = VISIBLE_STAGE_ORDER.includes(currentStage)
+    ? currentStage
+    : VISIBLE_STAGE_ORDER[0]
 
   const authToken = useMemo(() => {
     if (typeof window === 'undefined') return null
@@ -196,7 +208,7 @@ export default function PaperSessionPage() {
     const stored = typeof window !== 'undefined'
       ? localStorage.getItem(`paper_stage_${paperId}`)
       : null
-    if (stored && STAGES.some(stage => stage.key === stored)) {
+    if (stored && VISIBLE_STAGES.some(stage => stage.key === stored)) {
       setCurrentStage(stored as StageKey)
     }
     setHasHydratedStage(true)
@@ -323,8 +335,9 @@ export default function PaperSessionPage() {
       case 'HUMANIZATION':
         return hasDraftContent ? null : 'Draft at least one section before starting humanization.'
       case 'REVIEW_EXPORT':
-        if (!hasReviewReport) return 'Run the Review stage before export.'
-        if (requiredSectionKeys.length === 0) return null
+        if (requiredSectionKeys.length === 0) {
+          return hasDraftContent ? null : 'Draft at least one section before export.'
+        }
         return hasRequiredSections ? null : 'Complete all required sections before export.'
       default:
         return null
@@ -343,6 +356,9 @@ export default function PaperSessionPage() {
 
   const handleNavigateToStage = useCallback(async (stageKey: string) => {
     const nextStage = stageKey as StageKey
+    if (HIDDEN_STAGE_KEYS.has(nextStage)) {
+      return
+    }
     const lockReason = getStageLockReason(nextStage)
     if (lockReason) {
       setStageWarning(lockReason)
@@ -413,9 +429,14 @@ export default function PaperSessionPage() {
     return { prev, next }
   }
 
-  const { prev, next } = getPrevNextStages()
+  const { prev, next } = (() => {
+    const idx = VISIBLE_STAGE_ORDER.indexOf(resolvedCurrentStage)
+    const prevStage = idx > 0 ? VISIBLE_STAGE_ORDER[idx - 1] : null
+    const nextStage = idx >= 0 && idx < VISIBLE_STAGE_ORDER.length - 1 ? VISIBLE_STAGE_ORDER[idx + 1] : null
+    return { prev: prevStage, next: nextStage }
+  })()
 
-  const StageComponent = STAGE_COMPONENTS[currentStage]
+  const StageComponent = STAGE_COMPONENTS[resolvedCurrentStage]
 
   if (loading) {
     return (
@@ -448,7 +469,7 @@ export default function PaperSessionPage() {
       {/* Vertical Stage Navigation Sidebar */}
       <PaperVerticalStageNav
         session={session}
-        currentStage={currentStage}
+        currentStage={resolvedCurrentStage}
         paperId={paperId}
         onNavigateToStage={handleNavigateToStage}
         selectedSection={selectedSection}
@@ -457,21 +478,21 @@ export default function PaperSessionPage() {
 
       {/* Floating Navigation Buttons */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2">
-        {prev && (
-          <button
-            onClick={() => handleNavigateToStage(prev)}
+                {prev && (
+                  <button
+                    onClick={() => handleNavigateToStage(prev)}
             className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-full shadow-lg hover:shadow-xl hover:border-slate-300 transition-all text-sm font-medium text-slate-700"
           >
             <ChevronLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">{STAGES.find(s => s.key === prev)?.label}</span>
-          </button>
-        )}
+                    <span className="hidden sm:inline">{VISIBLE_STAGES.find(s => s.key === prev)?.label}</span>
+                  </button>
+                )}
         {next && (
           <button
             onClick={() => handleNavigateToStage(next)}
             className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-full shadow-lg hover:shadow-xl hover:bg-blue-700 transition-all text-sm font-medium"
           >
-            <span className="hidden sm:inline">{STAGES.find(s => s.key === next)?.label}</span>
+            <span className="hidden sm:inline">{VISIBLE_STAGES.find(s => s.key === next)?.label}</span>
             <ChevronRight className="w-4 h-4" />
           </button>
         )}

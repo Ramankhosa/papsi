@@ -36,6 +36,14 @@ const STAGES = [
 
 type StageKey = typeof STAGES[number]['key'];
 
+const HIDDEN_STAGE_KEYS = new Set<StageKey>([
+  'MANUSCRIPT_REVIEW',
+  'MANUSCRIPT_IMPROVE',
+  'HUMANIZATION'
+]);
+
+const VISIBLE_STAGES = STAGES.filter(stage => !HIDDEN_STAGE_KEYS.has(stage.key));
+
 type StageProps = {
   sessionId: string;
   authToken: string | null;
@@ -71,6 +79,11 @@ export default function PaperDraftingPage() {
   const [hasHydratedStage, setHasHydratedStage] = useState(false);
   const [pendingStage, setPendingStage] = useState<StageKey | null>(null);
   const [stageWarning, setStageWarning] = useState<string | null>(null);
+  const resolvedCurrentStage = (
+    STAGE_ORDER.includes(currentStage)
+      ? currentStage
+      : STAGE_ORDER[0]
+  ) as StageKey;
 
   const loadSession = useCallback(async () => {
     if (!paperId || !authToken) {
@@ -107,7 +120,7 @@ export default function PaperDraftingPage() {
     const stored = typeof window !== 'undefined'
       ? localStorage.getItem(`paper_stage_${paperId}`)
       : null;
-    if (stored && STAGES.some(stage => stage.key === stored)) {
+    if (stored && VISIBLE_STAGES.some(stage => stage.key === stored)) {
       setCurrentStage(stored as StageKey);
     }
     setHasHydratedStage(true);
@@ -124,7 +137,7 @@ export default function PaperDraftingPage() {
     }
   }, [authLoading, loadSession]);
 
-  const StageComponent = STAGE_COMPONENTS[currentStage];
+  const StageComponent = STAGE_COMPONENTS[resolvedCurrentStage];
   const handleSessionUpdated = useCallback((updated: any) => {
     setSession(updated);
   }, []);
@@ -265,14 +278,12 @@ export default function PaperDraftingPage() {
           return 'Complete paper foundation first.';
         }
         if (requiredSectionKeys.length === 0) {
-          return hasDraft
-            ? (hasReviewReport ? null : 'Run the Review stage before export.')
-            : 'Generate at least one section before review.';
+          return hasDraftContent ? null : 'Generate at least one section before export.';
         }
         if (!hasRequiredSections) {
-          return 'Complete all required sections before review.'
+          return 'Complete all required sections before export.'
         }
-        return hasReviewReport ? null : 'Run the Review stage before export.';
+        return null;
       default:
         return null;
     }
@@ -313,9 +324,9 @@ export default function PaperDraftingPage() {
       case 'REVIEW_EXPORT':
         if (!hasPaperType) return false;
         if (requiredSectionKeys.length === 0) {
-          return hasDraft && hasReviewReport;
+          return hasDraftContent;
         }
-        return hasRequiredSections && hasReviewReport;
+        return hasRequiredSections;
       default:
         return true;
     }
@@ -323,6 +334,7 @@ export default function PaperDraftingPage() {
 
   const handleStageChange = useCallback((stageKey: StageKey) => {
     if (stageKey === currentStage) return;
+    if (HIDDEN_STAGE_KEYS.has(stageKey)) return;
     const lockReason = getStageLockReason(stageKey);
     if (lockReason) {
       setPendingStage(stageKey);
@@ -353,7 +365,7 @@ export default function PaperDraftingPage() {
   };
 
   // Get adjacent stages for navigation
-  const currentIndex = STAGE_ORDER.indexOf(currentStage);
+  const currentIndex = STAGE_ORDER.indexOf(resolvedCurrentStage);
   const prevStage = currentIndex > 0 ? STAGE_ORDER[currentIndex - 1] : null;
   const nextStage = currentIndex < STAGE_ORDER.length - 1 ? STAGE_ORDER[currentIndex + 1] : null;
 
@@ -368,7 +380,7 @@ export default function PaperDraftingPage() {
       {session && (
         <PaperVerticalStageNav
           session={session}
-          currentStage={currentStage}
+          currentStage={resolvedCurrentStage}
           paperId={paperId}
           onNavigateToStage={handleNavigateToStage}
         />
@@ -424,7 +436,7 @@ export default function PaperDraftingPage() {
                 authToken={authToken}
                 onSessionUpdated={handleSessionUpdated}
                 onTopicSaved={handleTopicSaved}
-                onNavigateToStage={(stage) => handleStageChange(stage as StageKey)}
+                onNavigateToStage={(stage: string) => handleStageChange(stage as StageKey)}
               />
             )}
           </div>
@@ -440,7 +452,7 @@ export default function PaperDraftingPage() {
                     className="gap-2"
                   >
                     <span>{'<-'}</span>
-                    <span>{STAGES.find(s => s.key === prevStage)?.label || 'Previous'}</span>
+                    <span>{VISIBLE_STAGES.find(s => s.key === prevStage)?.label || 'Previous'}</span>
                   </Button>
                 )}
               </div>
@@ -450,7 +462,7 @@ export default function PaperDraftingPage() {
                     onClick={() => handleStageChange(nextStage as StageKey)}
                     className="gap-2"
                   >
-                    <span>{STAGES.find(s => s.key === nextStage)?.label || 'Next'}</span>
+                    <span>{VISIBLE_STAGES.find(s => s.key === nextStage)?.label || 'Next'}</span>
                     <span>{'->'}</span>
                   </Button>
                 )}

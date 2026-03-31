@@ -391,7 +391,7 @@ export function CountryProfileList({ refreshTrigger, onRefresh }: CountryProfile
             <div className="mt-3">
               <h3 className="text-lg font-medium text-gray-900 mb-4">Confirm Delete</h3>
               <p className="text-sm text-gray-600 mb-6">
-                Are you sure you want to delete the country profile for "{profiles.find(p => p.countryCode === showDeleteConfirm)?.name}"?
+                Are you sure you want to delete the country profile for &ldquo;{profiles.find(p => p.countryCode === showDeleteConfirm)?.name}&rdquo;?
                 This action cannot be undone.
               </p>
               <div className="flex justify-end space-x-4">

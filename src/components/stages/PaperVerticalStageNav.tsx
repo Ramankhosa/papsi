@@ -714,6 +714,16 @@ const STAGE_DEFINITIONS: StageDefinition[] = [
   }
 ]
 
+const HIDDEN_STAGE_KEYS = new Set([
+  'MANUSCRIPT_REVIEW',
+  'MANUSCRIPT_IMPROVE',
+  'HUMANIZATION'
+])
+
+const VISIBLE_STAGE_DEFINITIONS = STAGE_DEFINITIONS.filter(
+  stage => !HIDDEN_STAGE_KEYS.has(stage.key)
+)
+
 // ============================================================================
 // Calculation Functions
 // ============================================================================
@@ -760,13 +770,13 @@ function calculateStageCompletion(
 }
 
 function calculateOverallProgress(session: any, currentStage: string): number {
-  const currentIndex = STAGE_DEFINITIONS.findIndex(s => s.key === currentStage)
+  const currentIndex = VISIBLE_STAGE_DEFINITIONS.findIndex(s => s.key === currentStage)
   const resolvedIndex = currentIndex === -1 ? 0 : currentIndex
 
   let totalWeight = 0
   let completedWeight = 0
 
-  STAGE_DEFINITIONS.forEach((stage, index) => {
+  VISIBLE_STAGE_DEFINITIONS.forEach((stage, index) => {
     totalWeight += stage.weight
 
     if (index < resolvedIndex) {
@@ -820,7 +830,7 @@ export default function PaperVerticalStageNav({
   const [expandedStages, setExpandedStages] = useState<Set<string>>(new Set())
 
   const resolvedCurrentStage = useMemo(() => {
-    const keys = STAGE_DEFINITIONS.map(stage => stage.key)
+    const keys = VISIBLE_STAGE_DEFINITIONS.map(stage => stage.key)
     return keys.includes(currentStage) ? currentStage : keys[0]
   }, [currentStage])
 
@@ -982,13 +992,13 @@ export default function PaperVerticalStageNav({
 
       {/* Stage List */}
       <nav className={`flex-1 overflow-y-auto py-3 px-2 ${theme === 'dark' ? 'dark-scrollbar' : 'light-scrollbar'}`}>
-        {STAGE_DEFINITIONS.map((stage, stageIndex) => {
+        {VISIBLE_STAGE_DEFINITIONS.map((stage, stageIndex) => {
           const StageIcon = stage.icon
-          const previousGroup = stageIndex > 0 ? STAGE_DEFINITIONS[stageIndex - 1]?.groupLabel : undefined
+          const previousGroup = stageIndex > 0 ? VISIBLE_STAGE_DEFINITIONS[stageIndex - 1]?.groupLabel : undefined
           const showGroupLabel = Boolean(stage.groupLabel && stage.groupLabel !== previousGroup)
           const isExpanded = expandedStages.has(stage.key)
           const completion = calculateStageCompletion(stage, session)
-          const currentIndex = Math.max(0, STAGE_DEFINITIONS.findIndex(s => s.key === resolvedCurrentStage))
+          const currentIndex = Math.max(0, VISIBLE_STAGE_DEFINITIONS.findIndex(s => s.key === resolvedCurrentStage))
           const isCurrent = stage.key === resolvedCurrentStage
           const isPast = stageIndex < currentIndex
           const isFullyComplete = completion.requiredTotal > 0 && completion.requiredCompleted === completion.requiredTotal
@@ -1145,7 +1155,7 @@ export default function PaperVerticalStageNav({
       <div className={`p-3 border-t ${themeClasses.border}`}>
         <div className="flex items-center justify-between">
           <span className={`text-xs ${themeClasses.textSubtle}`}>
-            Stage {Math.max(1, STAGE_DEFINITIONS.findIndex(s => s.key === resolvedCurrentStage) + 1)} of {STAGE_DEFINITIONS.length}
+            Stage {Math.max(1, VISIBLE_STAGE_DEFINITIONS.findIndex(s => s.key === resolvedCurrentStage) + 1)} of {VISIBLE_STAGE_DEFINITIONS.length}
           </span>
           <button
             onClick={() => resolvedCurrentStage && handleStageClick(resolvedCurrentStage)}

@@ -15,7 +15,9 @@ import {
 } from '@/lib/figure-generation/llm-figure-service';
 import {
   generateStatisticalPlotSpec,
+  hasResolvedExplicitChartData,
   resolveChartGenerationInput,
+  toFigureDataPayload,
 } from '@/lib/figure-generation/llm-plot-service';
 import { chooseDiagramRenderer } from '@/lib/figure-generation/diagram-renderer-policy';
 import type { DiagramStructuredSpec, FigureData } from '@/lib/figure-generation/types';
@@ -831,6 +833,7 @@ export async function POST(
     let mermaidRenderError: string | null = null;
     let plantUMLRenderError: string | null = null;
     let inferredImageMeta: FigureInferenceMeta | null = null;
+    let resolvedChartInput: ReturnType<typeof resolveChartGenerationInput> | null = null;
 
     // Build paper context for LLM grounding
     const paperContext = buildPaperContext(session);
@@ -840,17 +843,21 @@ export async function POST(
       case 'DATA_CHART':
         {
           const chartEnrichment = data.suggestionMeta || (meta.suggestionMeta as any) || {};
+          const chartPayload = asObjectRecord(data.data) || asObjectRecord(meta.chartData);
           const chartInput = resolveChartGenerationInput(
             data.figureType,
-            data.data as Record<string, any> | null | undefined,
+            chartPayload as Record<string, any> | null | undefined,
             data.description || chartEnrichment?.dataNeeded || chartEnrichment?.whyThisFigure || null,
             data.title
           );
+          resolvedChartInput = chartInput;
 
-          if (!chartInput.datasets?.length && !chartInput.pointDatasets?.length && !chartInput.rawDataText) {
+          if (!hasResolvedExplicitChartData(chartInput)) {
             result = {
               success: false,
-              error: 'Publication-grade chart generation requires numeric data. Provide a structured payload or paste raw CSV/TSV, x/y rows, or table-style values into the figure request; placeholder charts are disabled.',
+              error: chartInput.source === 'raw_request'
+                ? 'Numeric text was detected, but it could not be parsed into exact chart values. Paste explicit CSV/TSV, label,value rows, or x,y rows so the chart uses complete and correct data.'
+                : 'Publication-grade chart generation requires explicit numeric data. Provide a structured payload or paste raw CSV/TSV, label,value rows, or x,y rows; placeholder charts are disabled.',
               errorCode: 'INVALID_DATA'
             };
             break;
@@ -1315,6 +1322,9 @@ export async function POST(
         suggestionMeta: effectiveSuggestionMeta,
         inferredImageMeta: inferredImageMeta ?? null
       });
+    const persistedChartData = data.category === 'DATA_CHART'
+      ? toFigureDataPayload(resolvedChartInput || { source: 'none' })
+      : null;
 
     // Update the figure plan with the generated image
     // NOTE: imagePath is stored in nodes JSON since the schema doesn't have a dedicated field
@@ -1351,6 +1361,7 @@ export async function POST(
           inferredImageMeta: inferredImageMeta ?? null,
           appliedPreferences: normalizedPreferences,
           suggestionMeta: effectiveSuggestionMeta,
+          chartData: persistedChartData || meta.chartData || undefined,
           lastModificationRequest: data.modificationRequest || null,
           rendererDecision: rendererDecisionMeta?.renderer || meta.rendererDecision || null,
           rendererDecisionReason: rendererDecisionMeta?.reason || meta.rendererDecisionReason || null,

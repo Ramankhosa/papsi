@@ -293,6 +293,26 @@ export function getLatestPaperReviewByMode(
   return reviews[0] || null
 }
 
+export function getPaperDraftSectionMapFromSession(session: any): Record<string, string> {
+  const drafts = Array.isArray(session?.annexureDrafts) ? session.annexureDrafts : []
+  const paperDraft = drafts
+    .filter((draft: any) => String(draft?.jurisdiction || '').toUpperCase() === 'PAPER')
+    .sort((left: any, right: any) => (right?.version || 0) - (left?.version || 0))[0]
+
+  if (!paperDraft?.extraSections) return {}
+  if (typeof paperDraft.extraSections === 'string') {
+    try {
+      return JSON.parse(paperDraft.extraSections) as Record<string, string>
+    } catch {
+      return {}
+    }
+  }
+
+  return typeof paperDraft.extraSections === 'object'
+    ? paperDraft.extraSections as Record<string, string>
+    : {}
+}
+
 export function countPendingRewriteIssues(review: PaperReviewRecord | null): number {
   if (!review) return 0
   return review.issues.filter(

@@ -34,7 +34,6 @@ import {
   AlertCircle
 } from 'lucide-react';
 import {
-  hasMeaningfulTopicContent,
   normalizeTopicExtraction
 } from '@/lib/paper-topic-extraction';
 
@@ -783,13 +782,11 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
               keywords: topic.keywords || [],
               abstractDraft: topic.abstractDraft || ''
             });
-            // Only skip the chooser when the topic contains meaningful content.
-            if (hasMeaningfulTopicContent(topic)) {
-              setMode('expert');
-              // Mark as saved if we have minimum valid data
-              if (topic.researchQuestion && topic.researchQuestion.length >= 20) {
-                setTopicSaved(true);
-              }
+            // Always keep the upload / entry chooser as the first screen when entering this stage.
+            // Saved topic data is still preloaded so selecting Expert or Guided resumes from the
+            // existing content instead of starting over.
+            if (topic.researchQuestion && topic.researchQuestion.length >= 20) {
+              setTopicSaved(true);
             }
           }
         }
